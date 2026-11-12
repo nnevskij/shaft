@@ -69,7 +69,7 @@ fn build() -> SettingsWindow {
     let max_body_kb = ui::text_field(&(s.inspector.max_body_bytes / 1024).to_string(), "1024");
     let clear_on_stop = ui::checkbox("Discard captured traffic when a tunnel stops", s.inspector.clear_on_stop);
     let max_attempts = ui::text_field(&s.reconnect.max_attempts.to_string(), "10");
-    let heartbeat = ui::text_field(&s.reconnect.heartbeat_interval_secs.to_string(), "5");
+    let heartbeat = ui::text_field(&s.reconnect.heartbeat().0.to_string(), "10 (minimum)");
     let log_level = ui::popup(&LOG_LEVELS, LOG_LEVELS.iter().position(|l| *l == s.log_level).unwrap_or(2));
 
     let problems = app.hotkey_problems.borrow().join("\n");
@@ -149,7 +149,7 @@ impl SettingsWindow {
                 num(&self.max_requests, "Requests kept", 1, 100_000)?,
                 num(&self.max_body_kb, "Body capture limit", 0, 100 * 1024)?,
                 num(&self.max_attempts, "Reconnect attempts", 1, 1000)?,
-                num(&self.heartbeat, "Heartbeat", 1, 300)?,
+                num(&self.heartbeat, "Heartbeat", shaft_config::MIN_HEARTBEAT_SECS, 300)?,
             ))
         })();
         let (max_req, body_kb, attempts, hb) = match parsed {
@@ -182,7 +182,7 @@ impl SettingsWindow {
             s.inspector.clear_on_stop = ui::is_checked(&self.clear_on_stop);
             s.reconnect.max_attempts = attempts as u32;
             s.reconnect.heartbeat_interval_secs = hb;
-            s.reconnect.heartbeat_tolerance_secs = (hb * 2).max(hb + 1);
+            s.reconnect.heartbeat_tolerance_secs = hb + 5;
             s.log_level = LOG_LEVELS[ui::selected(&self.log_level).min(LOG_LEVELS.len() - 1)].into();
         }
         if !app.save() {

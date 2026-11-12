@@ -158,45 +158,58 @@ pub fn parse_accelerator(s: &str) -> Result<HotKey, String> {
 // Single instance
 // ---------------------------------------------------------------------------
 
-const ACTIVATE_NOTIFICATION: &str = "dev.shaft.app.activate";
-
-/// Holds an exclusive lock for the lifetime of the process.
+/// One instance per config file: a second launch with the same config asks
+/// the running one to show itself; launches with another `SHAFT_CONFIG`
+/// (tests, development) run independently.
 pub struct InstanceLock {
     _file: File,
+    notification: String,
 }
 
-/// Take the lock, or tell the running instance to show itself and return None.
-pub fn acquire_instance_lock(dir: &Path) -> Option<InstanceLock> {
-    let _ = std::fs::create_dir_all(dir);
-    let path = dir.join("instance.lock");
+fn activate_notification(config: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    config.hash(&mut h);
+    format!("dev.shaft.app.activate.{:x}", h.finish())
+}
+
+/// Take the lock for `config`, or tell the instance holding it to show
+/// itself and return None.
+pub fn acquire_instance_lock(config: &Path) -> Option<InstanceLock> {
+    let notification = activate_notification(config);
+    let path = config.with_extension("lock");
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     let file = match File::create(&path) {
         Ok(f) => f,
         Err(e) => {
             tracing::warn!(error = %e, "cannot create instance lock; continuing without it");
-            return Some(InstanceLock { _file: File::open("/dev/null").expect("/dev/null") });
+            return Some(InstanceLock { _file: File::open("/dev/null").expect("/dev/null"), notification });
         }
     };
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc == 0 {
-        Some(InstanceLock { _file: file })
+        Some(InstanceLock { _file: file, notification })
     } else {
         let center = NSDistributedNotificationCenter::defaultCenter();
         unsafe {
-            center.postNotificationName_object_userInfo_deliverImmediately(&ns(ACTIVATE_NOTIFICATION), None, None, true);
+            center.postNotificationName_object_userInfo_deliverImmediately(&ns(&notification), None, None, true);
         }
         None
     }
 }
 
 /// Show the popover when another launch asks us to.
-pub fn observe_activation_requests() {
+pub fn observe_activation_requests(lock: &InstanceLock) {
+    let name = lock.notification.clone();
     let center = NSDistributedNotificationCenter::defaultCenter();
     let block = RcBlock::new(|_n: std::ptr::NonNull<NSNotification>| {
         crate::app::show_popover();
     });
     let token = unsafe {
         center.addObserverForName_object_queue_usingBlock(
-            Some(&ns(ACTIVATE_NOTIFICATION)),
+            Some(&ns(&name)),
             None,
             Some(&objc2_foundation::NSOperationQueue::mainQueue()),
             &block,

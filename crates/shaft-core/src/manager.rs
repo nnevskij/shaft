@@ -230,8 +230,9 @@ impl AccountSession {
         let mut b = Session::builder();
         b.authtoken(account.authtoken.expose().to_string()).client_info("shaft", env!("CARGO_PKG_VERSION"), None::<String>);
         let rc = &settings.reconnect;
-        let _ = b.heartbeat_interval(Duration::from_secs(rc.heartbeat_interval_secs.max(1)));
-        let _ = b.heartbeat_tolerance(Duration::from_secs(rc.heartbeat_tolerance_secs.max(1)));
+        let (interval, tolerance) = rc.heartbeat();
+        let _ = b.heartbeat_interval(Duration::from_secs(interval));
+        let _ = b.heartbeat_tolerance(Duration::from_secs(tolerance));
         if let Some(addr) = account.server_addr.as_deref().filter(|s| !s.is_empty()) {
             b.server_addr(addr).map_err(|e| CoreError::new(format!("invalid server address: {e}")))?;
         }

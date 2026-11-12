@@ -61,6 +61,8 @@ pub struct App {
     pub sessions: RefCell<HashMap<Uuid, SessionState>>,
     /// Last failure per profile, shown in the popover until the next start.
     pub failures: RefCell<HashMap<Uuid, CoreError>>,
+    /// Last failed quick tunnel (name, error), shown under the quick form.
+    pub quick_error: RefCell<Option<(String, CoreError)>>,
     pub last_url: RefCell<Option<String>>,
     /// Run ids whose URL was already copied/notified.
     announced: RefCell<std::collections::HashSet<Uuid>>,
@@ -95,6 +97,7 @@ impl App {
             quick_field: RefCell::new(None),
             sessions: RefCell::new(HashMap::new()),
             failures: RefCell::new(HashMap::new()),
+            quick_error: RefCell::new(None),
             last_url: RefCell::new(None),
             announced: RefCell::new(Default::default()),
             render_scheduled: Cell::new(false),
@@ -217,7 +220,9 @@ impl App {
             ui::error("Cannot start tunnel", &errors.join("\n"));
             return;
         }
+        *self.quick_error.borrow_mut() = None;
         self.core.start_profile(p, account);
+        self.schedule_render();
     }
 
     pub fn copy_url(&self, url: &str) {
@@ -258,6 +263,10 @@ impl App {
                 let was_online = self.announced.borrow_mut().remove(run_id);
                 if let Some(e) = failed {
                     self.failures.borrow_mut().insert(*profile_id, e.clone());
+                    // Quick tunnels have no saved profile row to show the error under.
+                    if self.config.borrow().profile(*profile_id).is_none() {
+                        *self.quick_error.borrow_mut() = Some((name.clone(), e.clone()));
+                    }
                     if notif.errors || (was_online && notif.tunnel_down) {
                         self.notifier.notify(&format!("{name} stopped"), &e.to_string());
                     }

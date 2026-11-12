@@ -174,9 +174,22 @@ pub struct ReconnectSettings {
     pub heartbeat_tolerance_secs: u64,
 }
 
+/// ngrok rejects sessions with a shorter heartbeat interval (ERR_NGROK_111).
+pub const MIN_HEARTBEAT_SECS: u64 = 10;
+
 impl Default for ReconnectSettings {
     fn default() -> Self {
-        Self { max_attempts: 10, heartbeat_interval_secs: 5, heartbeat_tolerance_secs: 10 }
+        Self { max_attempts: 10, heartbeat_interval_secs: MIN_HEARTBEAT_SECS, heartbeat_tolerance_secs: 15 }
+    }
+}
+
+impl ReconnectSettings {
+    /// Heartbeat (interval, tolerance) clamped to what ngrok accepts, so an
+    /// old or hand-edited config cannot make every session fail.
+    pub fn heartbeat(&self) -> (u64, u64) {
+        let interval = self.heartbeat_interval_secs.max(MIN_HEARTBEAT_SECS);
+        let tolerance = self.heartbeat_tolerance_secs.max(interval + 5);
+        (interval, tolerance)
     }
 }
 
@@ -577,6 +590,15 @@ mod tests {
         assert!(!s.contains("pw_789"));
         let back: AppConfig = toml::from_str(&s).unwrap();
         assert_eq!(back.profiles[0].name, "web");
+    }
+
+    #[test]
+    fn heartbeat_is_clamped_to_ngrok_minimum() {
+        assert_eq!(ReconnectSettings::default().heartbeat(), (10, 15));
+        let old = ReconnectSettings { max_attempts: 3, heartbeat_interval_secs: 5, heartbeat_tolerance_secs: 10 };
+        assert_eq!(old.heartbeat(), (10, 15));
+        let custom = ReconnectSettings { max_attempts: 3, heartbeat_interval_secs: 30, heartbeat_tolerance_secs: 60 };
+        assert_eq!(custom.heartbeat(), (30, 60));
     }
 
     #[test]

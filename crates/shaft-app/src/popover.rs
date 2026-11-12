@@ -109,6 +109,11 @@ fn main_view(a: &Rc<App>, h: &Handlers) -> Retained<NSStackView> {
     *a.quick_field.borrow_mut() = Some(field.clone());
     let quick = ui::fill_hstack(&[&proto_popup, &field, &start], 6.0);
     views.push(ui::v(&*quick));
+    if let Some((name, e)) = a.quick_error.borrow().as_ref() {
+        let mut e = e.clone();
+        e.message = format!("{name}: {}", e.message);
+        views.push(error_label(&e));
+    }
 
     // Active tunnels.
     views.push(ui::v(&*ui::section_label(&format!("Active ({})", snaps.len()))));

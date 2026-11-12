@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
-use shaft_config::{app_support_dir, ConfigStore, SecretStore};
+use shaft_config::{ConfigStore, SecretStore};
 
 fn main() {
     let mtm = MainThreadMarker::new().expect("must start on the main thread");
@@ -32,7 +32,7 @@ fn main() {
     let _log_guard = logging::init(&config.settings.log_level);
     tracing::info!(version = env!("CARGO_PKG_VERSION"), config = %store.path().display(), "starting Shaft");
 
-    let Some(_lock) = platform::acquire_instance_lock(&app_support_dir()) else {
+    let Some(lock) = platform::acquire_instance_lock(store.path()) else {
         tracing::info!("another instance is running; asked it to show itself");
         return;
     };
@@ -47,7 +47,7 @@ fn main() {
     let core = shaft_core::CoreHandle::start(runtime.handle().clone(), config.settings.clone(), app::event_sink());
     let first_run = config.accounts.is_empty();
     let app = app::App::install(core, store, config);
-    platform::observe_activation_requests();
+    platform::observe_activation_requests(&lock);
 
     if let Some(err) = load_error {
         // Do not overwrite a config we could not read.
@@ -81,6 +81,11 @@ fn main() {
                         for id in ids {
                             app::app().start_profile(id);
                         }
+                    }
+                    q if q.starts_with("quick:") => {
+                        let a = app::app();
+                        a.quick.borrow_mut().upstream = q.trim_start_matches("quick:").to_string();
+                        a.start_quick();
                     }
                     other => tracing::warn!(other, "unknown SHAFT_DEBUG_OPEN entry"),
                 }
