@@ -8,6 +8,19 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+# rustup installs cargo in ~/.cargo/bin, which non-login shells may not have on PATH.
+if ! command -v cargo >/dev/null 2>&1; then
+  if [[ -f "$HOME/.cargo/env" ]]; then
+    # shellcheck source=/dev/null
+    source "$HOME/.cargo/env"
+  fi
+  export PATH="$HOME/.cargo/bin:$PATH"
+fi
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "error: cargo not found. Install Rust from https://rustup.rs and retry." >&2
+  exit 1
+fi
 ROOT=$(pwd)
 VERSION=$(/usr/bin/sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 BUILD=${BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}
