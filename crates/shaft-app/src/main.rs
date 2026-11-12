@@ -84,7 +84,11 @@ fn main() {
                     }
                     q if q.starts_with("quick:") => {
                         let a = app::app();
-                        a.quick.borrow_mut().upstream = q.trim_start_matches("quick:").to_string();
+                        let upstream = q.trim_start_matches("quick:");
+                        a.quick.borrow_mut().upstream = upstream.to_string();
+                        if let Some(f) = a.quick_field.borrow().as_ref() {
+                            f.setStringValue(&objc2_foundation::NSString::from_str(upstream));
+                        }
                         a.start_quick();
                     }
                     other => tracing::warn!(other, "unknown SHAFT_DEBUG_OPEN entry"),

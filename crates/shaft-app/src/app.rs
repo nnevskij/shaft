@@ -325,8 +325,14 @@ impl App {
             img.setTemplate(true);
             button.setImage(Some(&img));
         }
-        let title = if online > 0 { format!(" {online}") } else { String::new() };
-        button.setTitle(&ns(&title));
+        // Changing the title changes the item's width, which would move an
+        // open popover anchored to it: defer until the popover closes.
+        if !self.popover.isShown() {
+            let title = if online > 0 { format!(" {online}") } else { String::new() };
+            if button.title().to_string() != title {
+                button.setTitle(&ns(&title));
+            }
+        }
         button.setToolTip(Some(&ns(&tooltip(&snaps))));
     }
 
@@ -338,7 +344,6 @@ impl App {
         on_main(|| {
             let Some(app) = try_app() else { return };
             app.render_scheduled.set(false);
-            tracing::debug!(shown = app.popover.isShown(), "render requested");
             if app.popover.isShown() {
                 popover::render(&app);
             }
@@ -350,6 +355,16 @@ impl App {
         self.remove_popover_monitors();
         if self.popover.isShown() {
             unsafe { self.popover.performClose(None) };
+            // Apply the status title deferred while the popover was open,
+            // once the close animation has finished.
+            std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_millis(350));
+                on_main(|| {
+                    if let Some(app) = try_app() {
+                        app.update_icon();
+                    }
+                });
+            });
         }
     }
 

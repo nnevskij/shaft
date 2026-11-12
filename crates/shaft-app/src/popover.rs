@@ -1,6 +1,6 @@
 //! The popover shown from the menu bar icon. Rebuilt from state on each render.
 
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSStackView, NSView};
@@ -16,25 +16,96 @@ use crate::{
 
 const WIDTH: f64 = 380.0;
 
+thread_local! {
+    /// Fixed container installed once as the popover's view (replacing the
+    /// view of a shown popover makes AppKit re-attach it, which flickers),
+    /// plus the signature of what it currently shows.
+    static ROOT: RefCell<Option<(Retained<NSView>, String)>> = const { RefCell::new(None) };
+}
+
+/// Everything the popover displays. Renders are skipped when it is unchanged,
+/// so frequent core events (probes, counters) do not rebuild the view.
+fn signature(app: &App) -> String {
+    let cfg = app.config.borrow();
+    let accounts: Vec<_> = cfg.accounts.iter().map(|a| (a.id, &a.name)).collect();
+    let profiles: Vec<_> = cfg.profiles.iter().map(|p| (p.id, &p.name, p.favorite, &p.upstream, p.account_id, p.protocol())).collect();
+    let mut failures: Vec<_> = app.failures.borrow().iter().map(|(k, v)| (*k, v.clone())).collect();
+    failures.sort_by_key(|(k, _)| *k);
+    format!(
+        "{accounts:?}|{:?}|{profiles:?}|{:?}|{failures:?}|{:?}|{:?}",
+        cfg.active_account().map(|a| a.id),
+        app.core.snapshots(),
+        app.quick_error.borrow(),
+        app.quick.borrow().protocol,
+    )
+}
+
 pub fn render(app: &Rc<App>) {
-    // Keep what the user typed in the quick field.
+    let sig = signature(app);
+    let unchanged = ROOT.with(|r| r.borrow().as_ref().map(|(_, s)| *s == sig).unwrap_or(false));
+    if unchanged {
+        return;
+    }
+    tracing::trace!("popover render");
+
+    // Keep what the user typed in the quick field, and whether it had focus.
+    let mut quick_focused = false;
     if let Some(f) = app.quick_field.borrow_mut().take() {
         app.quick.borrow_mut().upstream = ui::value(&f);
+        quick_focused = f.currentEditor().is_some();
     }
     app.popover_handlers.clear();
     let h = &app.popover_handlers;
 
+    let root = ROOT.with(|r| {
+        let mut r = r.borrow_mut();
+        let root = match r.as_ref() {
+            Some((v, _)) => v.clone(),
+            None => {
+                let v = NSView::new(ui::mtm());
+                app.popover_vc.setView(&v);
+                v
+            }
+        };
+        *r = Some((root.clone(), sig));
+        root
+    });
+
     let content = if app.config.borrow().accounts.is_empty() { onboarding(app, h) } else { main_view(app, h) };
     // Pad via a wrapper so the content's children can fill its full width.
-    let root = ui::vstack(&[&content], 0.0);
-    ui::pad(&root, 14.0, 14.0);
-    ui::fill_width(&root, &content);
-    ui::set_width(&root, WIDTH);
-    app.popover_vc.setView(&root);
-    root.layoutSubtreeIfNeeded();
-    let size = root.fittingSize();
-    app.popover.setContentSize(objc2_foundation::NSSize::new(WIDTH, size.height.min(720.0)));
-    ui::debug_snapshot("popover", &root);
+    let wrapper = ui::vstack(&[&content], 0.0);
+    ui::pad(&wrapper, 14.0, 14.0);
+    ui::fill_width(&wrapper, &content);
+    ui::set_width(&wrapper, WIDTH);
+    wrapper.layoutSubtreeIfNeeded();
+    let height = wrapper.fittingSize().height.min(720.0);
+
+    // Swap the content in place, without animation.
+    for old in root.subviews().iter() {
+        old.removeFromSuperview();
+    }
+    wrapper.setTranslatesAutoresizingMaskIntoConstraints(false);
+    root.addSubview(&wrapper);
+    wrapper.topAnchor().constraintEqualToAnchor(&root.topAnchor()).setActive(true);
+    wrapper.leadingAnchor().constraintEqualToAnchor(&root.leadingAnchor()).setActive(true);
+    let current = app.popover.contentSize();
+    if (current.height - height).abs() > 0.5 || (current.width - WIDTH).abs() > 0.5 {
+        let animates = app.popover.animates();
+        app.popover.setAnimates(false);
+        app.popover.setContentSize(objc2_foundation::NSSize::new(WIDTH, height));
+        app.popover.setAnimates(animates);
+    }
+
+    if quick_focused {
+        if let (Some(f), Some(w)) = (app.quick_field.borrow().as_ref(), root.window()) {
+            w.makeFirstResponder(Some(f));
+            if let Some(editor) = f.currentEditor() {
+                let len = f.stringValue().length();
+                editor.setSelectedRange(objc2_foundation::NSRange::new(len, 0));
+            }
+        }
+    }
+    ui::debug_snapshot("popover", &wrapper);
 }
 
 fn onboarding(_a: &Rc<App>, h: &Handlers) -> Retained<NSStackView> {
