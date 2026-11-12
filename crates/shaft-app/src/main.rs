@@ -1,6 +1,7 @@
 //! Shaft — a menu bar client for ngrok.
 
 mod app;
+mod kit;
 mod logging;
 mod platform;
 mod popover;

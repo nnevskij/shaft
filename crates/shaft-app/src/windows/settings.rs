@@ -1,32 +1,35 @@
-//! Global settings.
+//! Settings pane (System Settings style).
 
 use std::rc::Rc;
 
 use objc2::rc::Retained;
-use objc2_app_kit::{NSButton, NSPopUpButton, NSTextField, NSView, NSWindow};
-use shaft_config::{app_support_dir, log_dir};
+use objc2_app_kit::{NSPopUpButton, NSSwitch, NSTextField, NSView};
+use shaft_config::{app_support_dir, log_dir, MIN_HEARTBEAT_SECS};
 
+use super::main::Section;
 use crate::{
     app::app,
+    kit,
     ui::{self, ns, Handlers},
 };
 
 const LOG_LEVELS: [&str; 5] = ["error", "warn", "info", "debug", "trace"];
+const LW: f64 = 190.0;
 
-pub struct SettingsWindow {
-    pub window: Retained<NSWindow>,
-    _handlers: Handlers,
-    copy_url: Retained<NSButton>,
-    n_online: Retained<NSButton>,
-    n_down: Retained<NSButton>,
-    n_reconnected: Retained<NSButton>,
-    n_errors: Retained<NSButton>,
-    n_copied: Retained<NSButton>,
+pub struct SettingsPane {
+    pub view: Retained<NSView>,
+    _h: Handlers,
+    copy_url: Retained<NSSwitch>,
+    n_online: Retained<NSSwitch>,
+    n_down: Retained<NSSwitch>,
+    n_reconnected: Retained<NSSwitch>,
+    n_errors: Retained<NSSwitch>,
+    n_copied: Retained<NSSwitch>,
     hk_popover: Retained<NSTextField>,
     hk_copy: Retained<NSTextField>,
     max_requests: Retained<NSTextField>,
     max_body_kb: Retained<NSTextField>,
-    clear_on_stop: Retained<NSButton>,
+    clear_on_stop: Retained<NSSwitch>,
     max_attempts: Retained<NSTextField>,
     heartbeat: Retained<NSTextField>,
     log_level: Retained<NSPopUpButton>,
@@ -34,90 +37,126 @@ pub struct SettingsWindow {
 }
 
 pub fn open() {
-    let app = app();
-    app.close_popover();
-    if let Some(old) = app.windows.settings.borrow_mut().take() {
-        old.window.close();
-    }
-    let w = Rc::new(build());
-    ui::show_window(&w.window);
-    *app.windows.settings.borrow_mut() = Some(w);
+    super::main::show(Section::Settings);
 }
 
-fn with(f: impl FnOnce(&SettingsWindow)) {
+pub fn pane() -> Retained<NSView> {
+    let p = Rc::new(build());
+    *app().windows.settings.borrow_mut() = Some(p.clone());
+    p.view.clone()
+}
+
+fn with(f: impl FnOnce(&SettingsPane)) {
     let w = app().windows.settings.borrow().clone();
     if let Some(w) = w {
         f(&w);
     }
 }
 
-fn build() -> SettingsWindow {
+fn number_field(value: impl ToString, placeholder: &str) -> Retained<NSTextField> {
+    let f = ui::text_field(&value.to_string(), placeholder);
+    f.setAlignment(objc2_app_kit::NSTextAlignment::Right);
+    ui::set_width(&f, 90.0);
+    f
+}
+
+fn build() -> SettingsPane {
     let app = app();
     let s = app.config.borrow().settings.clone();
     let h = Handlers::new();
-    let window = ui::window("Shaft Settings", 560.0, 640.0, false);
 
-    let copy_url = ui::checkbox("Copy the public URL when a tunnel comes online", s.copy_url_on_start);
-    let n_online = ui::checkbox("Tunnel online", s.notifications.tunnel_online);
-    let n_down = ui::checkbox("Connection lost / tunnel down", s.notifications.tunnel_down);
-    let n_reconnected = ui::checkbox("Reconnected", s.notifications.tunnel_reconnected);
-    let n_errors = ui::checkbox("Errors (auth, plan limits, …)", s.notifications.errors);
-    let n_copied = ui::checkbox("URL copied", s.notifications.url_copied);
+    let copy_url = kit::switch(s.copy_url_on_start);
+    let n_online = kit::switch(s.notifications.tunnel_online);
+    let n_down = kit::switch(s.notifications.tunnel_down);
+    let n_reconnected = kit::switch(s.notifications.tunnel_reconnected);
+    let n_errors = kit::switch(s.notifications.errors);
+    let n_copied = kit::switch(s.notifications.url_copied);
     let hk_popover = ui::text_field(&s.hotkeys.toggle_popover, "e.g. cmd+shift+n");
     let hk_copy = ui::text_field(&s.hotkeys.copy_last_url, "e.g. cmd+shift+c");
-    let max_requests = ui::text_field(&s.inspector.max_requests.to_string(), "500");
-    let max_body_kb = ui::text_field(&(s.inspector.max_body_bytes / 1024).to_string(), "1024");
-    let clear_on_stop = ui::checkbox("Discard captured traffic when a tunnel stops", s.inspector.clear_on_stop);
-    let max_attempts = ui::text_field(&s.reconnect.max_attempts.to_string(), "10");
-    let heartbeat = ui::text_field(&s.reconnect.heartbeat().0.to_string(), "10 (minimum)");
+    let max_requests = number_field(s.inspector.max_requests, "500");
+    let max_body_kb = number_field(s.inspector.max_body_bytes / 1024, "1024");
+    let clear_on_stop = kit::switch(s.inspector.clear_on_stop);
+    let max_attempts = number_field(s.reconnect.max_attempts, "10");
+    let heartbeat = number_field(s.reconnect.heartbeat().0, "10");
     let log_level = ui::popup(&LOG_LEVELS, LOG_LEVELS.iter().position(|l| *l == s.log_level).unwrap_or(2));
 
-    let problems = app.hotkey_problems.borrow().join("\n");
-    let status = ui::wrapping_label(&problems, 500.0);
-
-    let general = ui::form(&[("", &copy_url)], 160.0);
-    let notif = ui::form(&[("Notify on", &n_online), ("", &n_down), ("", &n_reconnected), ("", &n_errors), ("", &n_copied)], 160.0);
-    let keys = ui::form(&[("Show/hide menu", &hk_popover), ("Copy last URL", &hk_copy)], 160.0);
-    let keys_note = ui::secondary_label("Per-profile shortcuts are set in each profile. Modifiers: cmd, shift, alt/option, ctrl.");
-    let inspector =
-        ui::form(&[("Requests kept per tunnel", &max_requests), ("Body capture limit (KB)", &max_body_kb), ("", &clear_on_stop)], 160.0);
-    let network = ui::form(&[("Reconnect attempts", &max_attempts), ("Heartbeat (seconds)", &heartbeat)], 160.0);
-    let logs = ui::form(&[("Log level", &log_level)], 160.0);
-
-    let open_logs = ui::button("Open logs", &h, || ui::reveal_in_finder(&log_dir()));
-    let open_config = ui::button("Open config folder", &h, || ui::reveal_in_finder(&app_support_dir().join("config.toml")));
-    let save = ui::button("Save", &h, || with(|w| w.save()));
-    save.setKeyEquivalent(&ns("\r"));
-    let buttons = ui::hstack(&[&open_logs, &open_config, &ui::spacer(), &save], 8.0);
-
-    let root = ui::vstack(
-        &[
-            &general,
-            &ui::separator(),
-            &notif,
-            &ui::separator(),
-            &keys,
-            &keys_note,
-            &ui::separator(),
-            &ui::section_label("Inspector"),
-            &inspector,
-            &ui::separator(),
-            &ui::section_label("Connection"),
-            &network,
-            &logs,
-            &status,
-            &buttons,
-        ],
-        10.0,
+    let general = kit::section(
+        Some("General"),
+        &[kit::row_detail("Copy URL when online", "Put a tunnel's public URL on the clipboard as soon as it starts", &copy_url)],
+        None,
     );
-    for v in [&*general as &NSView, &notif, &keys, &inspector, &network, &logs, &buttons] {
-        ui::fill_width(&root, v);
-    }
-    ui::set_window_content_top(&window, &root);
+    let notifications = kit::section(
+        Some("Notifications"),
+        &[
+            kit::row("Tunnel online", &n_online),
+            kit::row("Connection lost", &n_down),
+            kit::row("Reconnected", &n_reconnected),
+            kit::row_detail("Errors", "Authentication, plan limits, failed tunnels", &n_errors),
+            kit::row("URL copied", &n_copied),
+        ],
+        None,
+    );
+    let shortcuts = kit::section(
+        Some("Keyboard Shortcuts"),
+        &[kit::row_fill("Show Shaft menu", &hk_popover, LW), kit::row_fill("Copy last URL", &hk_copy, LW)],
+        Some("Global shortcuts work from any app. Modifiers: cmd, shift, alt/option, ctrl. Per-profile shortcuts are set in each profile."),
+    );
+    let inspector = kit::section(
+        Some("Inspector"),
+        &[
+            kit::row("Requests kept per tunnel", &max_requests),
+            kit::row("Body capture limit (KB)", &max_body_kb),
+            kit::row_detail("Discard traffic on stop", "Forget captured requests when a tunnel stops", &clear_on_stop),
+        ],
+        None,
+    );
+    let connection = kit::section(
+        Some("Connection"),
+        &[
+            kit::row("Reconnect attempts", &max_attempts),
+            kit::row_detail("Heartbeat (seconds)", &format!("Minimum {MIN_HEARTBEAT_SECS}; lower detects drops faster"), &heartbeat),
+        ],
+        None,
+    );
+    let open_logs = kit::glass_button("Show Logs", Some("doc.text.magnifyingglass"), false, &h, || ui::reveal_in_finder(&log_dir()));
+    let open_config =
+        kit::glass_button("Show Config", Some("folder"), false, &h, || ui::reveal_in_finder(&app_support_dir().join("config.toml")));
+    let troubleshooting = kit::section(
+        Some("Troubleshooting"),
+        &[kit::row("Log level", &log_level), ui::v(&*ui::hstack(&[&open_logs, &open_config, &ui::spacer()], 8.0))],
+        None,
+    );
 
-    SettingsWindow {
-        window,
-        _handlers: h,
+    let problems = app.hotkey_problems.borrow().join("\n");
+    let status = kit::footnote(&problems, 560.0);
+    let save = kit::glass_button("Save", None, true, &h, || with(|w| w.save()));
+    save.setKeyEquivalent(&ns("s"));
+    save.setKeyEquivalentModifierMask(objc2_app_kit::NSEventModifierFlags::Command);
+    let buttons = ui::hstack(&[&status, &ui::spacer(), &save], 8.0);
+
+    let content = ui::vstack(&[&general, &notifications, &shortcuts, &inspector, &connection, &troubleshooting, &buttons], 28.0);
+    for v in [&*general as &NSView, &notifications, &shortcuts, &inspector, &connection, &troubleshooting, &buttons] {
+        ui::fill_width(&content, v);
+    }
+    ui::pad(&content, 20.0, 28.0);
+    // Keep forms at a readable width, centered in wide windows.
+    let column = NSView::new(ui::mtm());
+    content.setTranslatesAutoresizingMaskIntoConstraints(false);
+    column.addSubview(&content);
+    content.topAnchor().constraintEqualToAnchor(&column.topAnchor()).setActive(true);
+    content.bottomAnchor().constraintEqualToAnchor(&column.bottomAnchor()).setActive(true);
+    content.centerXAnchor().constraintEqualToAnchor(&column.centerXAnchor()).setActive(true);
+    content.widthAnchor().constraintLessThanOrEqualToConstant(680.0).setActive(true);
+    let w = content.widthAnchor().constraintEqualToAnchor(&column.widthAnchor());
+    w.setPriority(500.0);
+    w.setActive(true);
+    let col_stack = ui::vstack(&[&column], 0.0);
+    ui::fill_width(&col_stack, &column);
+    let scroll = ui::scroll_stack(&col_stack);
+
+    SettingsPane {
+        view: ui::v(&*scroll),
+        _h: h,
         copy_url,
         n_online,
         n_down,
@@ -136,7 +175,7 @@ fn build() -> SettingsWindow {
     }
 }
 
-impl SettingsWindow {
+impl SettingsPane {
     fn save(&self) {
         let num = |f: &NSTextField, name: &str, min: u64, max: u64| -> Result<u64, String> {
             match ui::value(f).parse::<u64>() {
@@ -149,7 +188,7 @@ impl SettingsWindow {
                 num(&self.max_requests, "Requests kept", 1, 100_000)?,
                 num(&self.max_body_kb, "Body capture limit", 0, 100 * 1024)?,
                 num(&self.max_attempts, "Reconnect attempts", 1, 1000)?,
-                num(&self.heartbeat, "Heartbeat", shaft_config::MIN_HEARTBEAT_SECS, 300)?,
+                num(&self.heartbeat, "Heartbeat", MIN_HEARTBEAT_SECS, 300)?,
             ))
         })();
         let (max_req, body_kb, attempts, hb) = match parsed {
@@ -169,17 +208,17 @@ impl SettingsWindow {
         {
             let mut cfg = app.config.borrow_mut();
             let s = &mut cfg.settings;
-            s.copy_url_on_start = ui::is_checked(&self.copy_url);
-            s.notifications.tunnel_online = ui::is_checked(&self.n_online);
-            s.notifications.tunnel_down = ui::is_checked(&self.n_down);
-            s.notifications.tunnel_reconnected = ui::is_checked(&self.n_reconnected);
-            s.notifications.errors = ui::is_checked(&self.n_errors);
-            s.notifications.url_copied = ui::is_checked(&self.n_copied);
+            s.copy_url_on_start = kit::is_on(&self.copy_url);
+            s.notifications.tunnel_online = kit::is_on(&self.n_online);
+            s.notifications.tunnel_down = kit::is_on(&self.n_down);
+            s.notifications.tunnel_reconnected = kit::is_on(&self.n_reconnected);
+            s.notifications.errors = kit::is_on(&self.n_errors);
+            s.notifications.url_copied = kit::is_on(&self.n_copied);
             s.hotkeys.toggle_popover = ui::value(&self.hk_popover);
             s.hotkeys.copy_last_url = ui::value(&self.hk_copy);
             s.inspector.max_requests = max_req as usize;
             s.inspector.max_body_bytes = (body_kb * 1024) as usize;
-            s.inspector.clear_on_stop = ui::is_checked(&self.clear_on_stop);
+            s.inspector.clear_on_stop = kit::is_on(&self.clear_on_stop);
             s.reconnect.max_attempts = attempts as u32;
             s.reconnect.heartbeat_interval_secs = hb;
             s.reconnect.heartbeat_tolerance_secs = hb + 5;
@@ -194,7 +233,7 @@ impl SettingsWindow {
         }
         let problems = app.hotkey_problems.borrow().clone();
         if problems.is_empty() {
-            self.status.setStringValue(&ns("Saved. Connection settings apply to newly started sessions."));
+            self.status.setStringValue(&ns("Saved."));
         } else {
             self.status.setStringValue(&ns(&format!("Saved, but some shortcuts could not be registered:\n{}", problems.join("\n"))));
         }

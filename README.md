@@ -52,6 +52,7 @@ open dist/Shaft.app
 | `SHAFT_LOG=debug` | Log level (logs: `~/Library/Logs/dev.shaft.app`) |
 | `SHAFT_DEBUG_OPEN=popover,inspector,…` | Open UI at launch |
 | `SHAFT_SNAPSHOT_DIR=/tmp/snaps` | Render shown views to PNG (no screen recording needed) |
+| `SHAFT_NO_GLASS=1` | Use pre-macOS 26 button styles (also needed for snapshots: they cannot capture glass) |
 
 ## Tests
 

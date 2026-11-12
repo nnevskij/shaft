@@ -1,85 +1,117 @@
-//! Diagnostics window (`ngrok diagnose` / `ngrok version` parity).
+//! Diagnostics pane (`ngrok diagnose` / `ngrok version` parity).
 
 use std::{cell::RefCell, rc::Rc};
 
 use objc2::rc::Retained;
-use objc2_app_kit::{NSButton, NSPopUpButton, NSTextView, NSView, NSWindow};
+use objc2_app_kit::{NSButton, NSColor, NSPopUpButton, NSStackView, NSView};
+use shaft_core::diagnostics::{Check, CheckStatus};
 use uuid::Uuid;
 
+use super::main::Section;
 use crate::{
     app::app,
+    kit,
     platform::on_main,
     ui::{self, ns, Handlers},
 };
 
-pub struct DiagnosticsWindow {
-    pub window: Retained<NSWindow>,
-    _handlers: Handlers,
+pub struct DiagnosticsPane {
+    pub view: Retained<NSView>,
+    _h: Handlers,
     account_ids: Vec<Uuid>,
     account: Retained<NSPopUpButton>,
-    output: Retained<NSTextView>,
+    results: Retained<NSStackView>,
     run: Retained<NSButton>,
     report: RefCell<String>,
 }
 
 pub fn open() {
-    let app = app();
-    app.close_popover();
-    if let Some(old) = app.windows.diagnostics.borrow_mut().take() {
-        old.window.close();
-    }
-    let w = Rc::new(build());
-    ui::show_window(&w.window);
-    *app.windows.diagnostics.borrow_mut() = Some(w.clone());
-    w.start();
+    super::main::show(Section::Diagnostics);
 }
 
-fn with(f: impl FnOnce(&DiagnosticsWindow)) {
+pub fn pane() -> Retained<NSView> {
+    let p = Rc::new(build());
+    *app().windows.diagnostics.borrow_mut() = Some(p.clone());
+    p.start();
+    p.view.clone()
+}
+
+fn with(f: impl FnOnce(&DiagnosticsPane)) {
     let w = app().windows.diagnostics.borrow().clone();
     if let Some(w) = w {
         f(&w);
     }
 }
 
-fn build() -> DiagnosticsWindow {
-    let app = app();
-    let cfg = app.config.borrow().clone();
+fn build() -> DiagnosticsPane {
+    let cfg = app().config.borrow().clone();
     let h = Handlers::new();
-    let window = ui::window("Diagnostics", 620.0, 420.0, true);
     let account_ids: Vec<Uuid> = cfg.accounts.iter().map(|a| a.id).collect();
     let names: Vec<&str> = cfg.accounts.iter().map(|a| a.name.as_str()).collect();
     let sel = cfg.active_account().and_then(|a| account_ids.iter().position(|i| *i == a.id)).unwrap_or(0);
-    let account = if names.is_empty() { ui::popup(&["(no account)"], 0) } else { ui::popup(&names, sel) };
-    let run = ui::button("Run checks", &h, || with(|w| w.start()));
-    let copy = ui::button("Copy report", &h, || with(|w| ui::copy_to_clipboard(&w.report.borrow())));
-    let bar = ui::fill_hstack(&[&ui::label("Account"), &account, &ui::spacer(), &copy, &run], 8.0);
-    let (scroll, output) = ui::text_area("", true, false);
-    ui::set_min_height(&scroll, 300.0);
-    let note = ui::secondary_label(
-        "Checks DNS, TCP and TLS to the ngrok edge, then validates the authtoken and API key. No secrets are included in the report.",
+    let account = if names.is_empty() { ui::popup(&["No account"], 0) } else { ui::popup(&names, sel) };
+    let run = kit::glass_button("Run Again", Some("arrow.clockwise"), true, &h, || with(|w| w.start()));
+    let copy = kit::glass_button("Copy Report", Some("doc.on.doc"), false, &h, || with(|w| ui::copy_to_clipboard(&w.report.borrow())));
+    let setup = kit::section(Some("Check"), &[kit::row("Account", &account)], None);
+    let results = ui::vstack(&[], 0.0);
+    let note = kit::footnote(
+        "Checks DNS, TCP and TLS to the ngrok edge, then validates the authtoken and the API key. The report contains no secrets.",
+        560.0,
     );
-    let root = ui::vstack(&[&bar, &scroll, &note], 10.0);
-    for v in [&*bar as &NSView, &scroll] {
-        ui::fill_width(&root, v);
+    let buttons = ui::hstack(&[&copy, &ui::spacer(), &run], 8.0);
+    let content = ui::vstack(&[&setup, &results, &note, &buttons], 28.0);
+    for v in [&*setup as &NSView, &results, &note, &buttons] {
+        ui::fill_width(&content, v);
     }
-    ui::set_window_content(&window, &root);
-    DiagnosticsWindow { window, _handlers: h, account_ids, account, output, run, report: RefCell::new(String::new()) }
+    ui::pad(&content, 20.0, 28.0);
+    let scroll = ui::scroll_stack(&content);
+    DiagnosticsPane { view: ui::v(&*scroll), _h: h, account_ids, account, results, run, report: RefCell::new(String::new()) }
 }
 
-impl DiagnosticsWindow {
+fn result_row(c: &Check) -> Retained<NSView> {
+    let (symbol, color) = match c.status {
+        CheckStatus::Ok => ("checkmark.circle.fill", NSColor::systemGreenColor()),
+        CheckStatus::Warning => ("exclamationmark.triangle.fill", NSColor::systemOrangeColor()),
+        CheckStatus::Failed => ("xmark.octagon.fill", NSColor::systemRedColor()),
+        CheckStatus::Skipped => ("minus.circle", NSColor::tertiaryLabelColor()),
+    };
+    let icon = kit::symbol_view(symbol, 16.0, Some(&color));
+    let name = ui::label(&c.name);
+    ui::resist_compression(&name);
+    let detail = ui::wrapping_label(&c.detail, 380.0);
+    detail.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    detail.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(11.0)));
+    let texts = ui::vstack(&[&name, &detail], 2.0);
+    let time = ui::secondary_label(&c.duration.map(|d| format!("{} ms", d.as_millis())).unwrap_or_default());
+    let row = ui::hstack(&[&icon, &texts, &ui::spacer(), &time], 10.0);
+    row.setAlignment(objc2_app_kit::NSLayoutAttribute::Top);
+    ui::v(&*row)
+}
+
+impl DiagnosticsPane {
+    fn set_results(&self, rows: Vec<Retained<NSView>>) {
+        for v in self.results.arrangedSubviews().iter() {
+            v.removeFromSuperview();
+        }
+        let section = kit::section(Some("Results"), &rows, None);
+        self.results.addArrangedSubview(&section);
+        ui::fill_width(&self.results, &section);
+    }
+
     fn start(&self) {
         let app = app();
         let account = self.account_ids.get(ui::selected(&self.account)).and_then(|id| app.config.borrow().account(*id).cloned());
         self.run.setEnabled(false);
-        self.output.setString(&ns("Running…"));
+        let spinner = ui::secondary_label("Running checks…");
+        self.set_results(vec![ui::v(&*spinner)]);
         app.core.runtime().spawn(async move {
             let checks = shaft_core::diagnostics::run(account.as_ref()).await;
-            let report = shaft_core::diagnostics::report(&checks);
             on_main(move || {
                 with(|w| {
-                    w.output.setString(&ns(&report));
-                    *w.report.borrow_mut() = report;
+                    *w.report.borrow_mut() = shaft_core::diagnostics::report(&checks);
+                    w.set_results(checks.iter().map(result_row).collect());
                     w.run.setEnabled(true);
+                    let _ = ns("");
                 })
             });
         });

@@ -1,4 +1,4 @@
-//! Request inspector: live list of captured HTTP exchanges, detail view,
+//! Inspector pane: live list of captured HTTP exchanges, detail view,
 //! replay (verbatim or edited), curl/HAR export.
 
 use std::{
@@ -8,7 +8,7 @@ use std::{
 };
 
 use objc2::rc::Retained;
-use objc2_app_kit::{NSButton, NSPopUpButton, NSTextField, NSTextView, NSView, NSWindow};
+use objc2_app_kit::{NSButton, NSPopUpButton, NSSearchField, NSSwitch, NSTextField, NSTextView, NSView, NSWindow};
 use shaft_core::InspectorEntry;
 use shaft_inspector::{
     format::{self, BodyView},
@@ -16,21 +16,23 @@ use shaft_inspector::{
 };
 use uuid::Uuid;
 
+use super::main::Section;
 use crate::{
     app::app,
+    kit,
     platform::on_main,
     ui::{self, ns, Handlers, Table},
 };
 
-const METHODS: [&str; 8] = ["All methods", "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
-const STATUSES: [&str; 5] = ["All statuses", "2xx", "3xx", "4xx", "5xx / errors"];
+const METHODS: [&str; 8] = ["All Methods", "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
+const STATUSES: [&str; 5] = ["All Statuses", "2xx", "3xx", "4xx", "5xx / Errors"];
 const VIEWS: [&str; 3] = ["Pretty", "Raw", "Hex"];
 
-/// The "Edit & Replay" window, its text view and its handlers.
+/// The "Edit & Replay" sheet, its text view and its handlers.
 type ReplayEditor = (Retained<NSWindow>, Retained<NSTextView>, Handlers);
 
-pub struct InspectorWindow {
-    pub window: Retained<NSWindow>,
+pub struct InspectorPane {
+    pub view: Retained<NSView>,
     _handlers: Handlers,
     runs: RefCell<Vec<InspectorEntry>>,
     run_popup: Retained<NSPopUpButton>,
@@ -48,41 +50,35 @@ pub struct InspectorWindow {
     replay: Retained<NSButton>,
     edit_replay: Retained<NSButton>,
     curl: Retained<NSButton>,
-    follow: Retained<NSButton>,
-    // Replay editor
+    follow: Retained<NSSwitch>,
     editor: RefCell<Option<ReplayEditor>>,
 }
 
 pub fn open(run: Option<Uuid>) {
-    let app = app();
-    app.close_popover();
-    let existing = app.windows.inspector.borrow().clone();
-    let w = match existing {
-        Some(w) => w,
-        None => {
-            let w = Rc::new(build());
-            *app.windows.inspector.borrow_mut() = Some(w.clone());
-            w
+    super::main::show(Section::Inspector);
+    with(|w| {
+        if run.is_some() {
+            w.current.set(run);
         }
-    };
-    if run.is_some() {
-        w.current.set(run);
-    }
-    w.reload_runs();
-    ui::show_window(&w.window);
+        w.reload_runs();
+    });
 }
 
-fn with(f: impl FnOnce(&InspectorWindow)) {
+pub fn pane() -> Retained<NSView> {
+    let w = Rc::new(build());
+    *app().windows.inspector.borrow_mut() = Some(w.clone());
+    w.view.clone()
+}
+
+fn with(f: impl FnOnce(&InspectorPane)) {
     let w = app().windows.inspector.borrow().clone();
     if let Some(w) = w {
         f(&w);
     }
 }
 
-fn build() -> InspectorWindow {
+fn build() -> InspectorPane {
     let h = Handlers::new();
-    let window = ui::window("Inspector", 980.0, 680.0, true);
-    window.setFrameAutosaveName(&ns("ShaftInspector"));
 
     let run_popup = ui::popup(&["No inspected tunnels"], 0);
     ui::on_action(&run_popup, &h, || {
@@ -94,12 +90,16 @@ fn build() -> InspectorWindow {
             w.reload_table();
         })
     });
-    let filter = ui::text_field("", "Filter path, header or body…");
+    let search = NSSearchField::new(ui::mtm());
+    search.setPlaceholderString(Some(&ns("Filter path, header or body")));
+    ui::set_min_width(&search, 200.0);
+    let filter: Retained<NSTextField> = Retained::into_super(search);
     ui::on_action(&filter, &h, || with(|w| w.reload_table()));
     let method = ui::popup_with(&METHODS, 0, &h, |_| with(|w| w.reload_table()));
     let status = ui::popup_with(&STATUSES, 0, &h, |_| with(|w| w.reload_table()));
-    let follow = ui::checkbox("Follow", true);
-    let clear = ui::button("Clear", &h, || {
+    let follow = kit::switch(true);
+    let follow_label = ui::secondary_label("Follow");
+    let clear = kit::glass_button("", Some("trash"), false, &h, || {
         with(|w| {
             if let Some(e) = w.entry() {
                 e.store.clear();
@@ -108,12 +108,15 @@ fn build() -> InspectorWindow {
             }
         })
     });
-    let har = ui::button("Export HAR…", &h, || with(|w| w.export_har()));
-    let toolbar = ui::fill_hstack(&[&run_popup, &filter, &method, &status, &follow, &clear, &har], 8.0);
+    clear.setToolTip(Some(&ns("Clear captured requests")));
+    let har = kit::glass_button("", Some("square.and.arrow.up"), false, &h, || with(|w| w.export_har()));
+    har.setToolTip(Some(&ns("Export HAR…")));
+    let toolbar = ui::fill_hstack(&[&run_popup, &filter, &method, &status, &follow_label, &follow, &clear, &har], 10.0);
 
     let table =
-        Table::new(&[("Time", 80.0), ("Method", 64.0), ("Path", 380.0), ("Status", 60.0), ("Duration", 80.0), ("Size", 80.0), ("", 60.0)]);
-    ui::set_height(&table.scroll, 240.0);
+        Table::new(&[("Time", 76.0), ("Method", 64.0), ("Path", 380.0), ("Status", 56.0), ("Duration", 76.0), ("Size", 76.0), ("", 70.0)]);
+    table.set_full_width_style();
+    ui::set_height(&table.scroll, 260.0);
     table.on_select(|i| {
         with(|w| {
             let id = i.and_then(|i| w.shown.borrow().get(i).copied());
@@ -122,24 +125,31 @@ fn build() -> InspectorWindow {
         })
     });
     table.on_double_click(|_| with(|w| w.replay_selected()));
+    let table_card = kit::card(&table.scroll, 0.0);
 
     let summary = ui::label("");
+    summary.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(13.0, kit::weight::SEMIBOLD)));
     let view_mode = ui::popup_with(&VIEWS, 0, &h, |_| with(|w| w.show_detail()));
-    let replay = ui::button("Replay", &h, || with(|w| w.replay_selected()));
-    let edit_replay = ui::button("Edit & Replay…", &h, || with(|w| w.open_editor()));
-    let curl = ui::button("Copy as curl", &h, || with(|w| w.copy_curl()));
-    let detail_bar = ui::fill_hstack(&[&summary, &ui::spacer(), &view_mode, &curl, &edit_replay, &replay], 8.0);
+    let curl = kit::glass_button("curl", Some("terminal"), false, &h, || with(|w| w.copy_curl()));
+    curl.setToolTip(Some(&ns("Copy as curl")));
+    let edit_replay = kit::glass_button("Edit & Replay…", Some("square.and.pencil"), false, &h, || with(|w| w.open_editor()));
+    let replay = kit::glass_button("Replay", Some("arrow.clockwise"), true, &h, || with(|w| w.replay_selected()));
+    let detail_bar = ui::fill_hstack(&[&summary, &ui::spacer(), &view_mode, &curl, &edit_replay, &replay], 10.0);
     let (detail_scroll, detail) = ui::text_area("", true, false);
-    ui::set_min_height(&detail_scroll, 220.0);
+    detail_scroll.setBorderType(objc2_app_kit::NSBorderType::NoBorder);
+    detail.setTextContainerInset(objc2_foundation::NSSize::new(8.0, 8.0));
+    ui::set_min_height(&detail_scroll, 200.0);
+    let detail_card = kit::card(&detail_scroll, 0.0);
 
-    let root = ui::vstack(&[&toolbar, &table.scroll, &detail_bar, &detail_scroll], 8.0);
-    for v in [&*toolbar as &NSView, &table.scroll, &detail_bar, &detail_scroll] {
+    let root = ui::vstack(&[&toolbar, &table_card, &detail_bar, &detail_card], 14.0);
+    for v in [&*toolbar as &NSView, &table_card, &detail_bar, &detail_card] {
         ui::fill_width(&root, v);
     }
-    ui::set_window_content(&window, &root);
+    ui::pad(&root, 20.0, 24.0);
+    detail_card.setContentHuggingPriority_forOrientation(1.0, objc2_app_kit::NSLayoutConstraintOrientation::Vertical);
 
-    let w = InspectorWindow {
-        window,
+    let w = InspectorPane {
+        view: ui::v(&*root),
         _handlers: h,
         runs: RefCell::new(Vec::new()),
         run_popup,
@@ -163,7 +173,7 @@ fn build() -> InspectorWindow {
     w
 }
 
-impl InspectorWindow {
+impl InspectorPane {
     fn entry(&self) -> Option<InspectorEntry> {
         let id = self.current.get()?;
         app().core.inspector(id)
@@ -268,11 +278,14 @@ impl InspectorWindow {
         if keep.is_none() {
             self.selected_id.set(None);
         }
-        if grew && ui::is_checked(&self.follow) {
+        if grew && kit::is_on(&self.follow) {
             self.table.scroll_to_end();
         }
         let counters = self.entry().map(|e| e.store.counters()).unwrap_or_default();
-        self.window.setTitle(&ns(&format!("Inspector — {} requests, {} upstream errors", counters.total, counters.upstream_errors)));
+        super::main::set_subtitle(
+            Section::Inspector,
+            &format!("{} requests · {} upstream errors", counters.total, counters.upstream_errors),
+        );
         self.show_detail();
     }
 
@@ -380,12 +393,12 @@ impl InspectorWindow {
         let (scroll, text) = ui::text_area(&format::to_raw_request(&req), true, true);
         ui::set_min_height(&scroll, 320.0);
         let original = e.id;
-        let send = ui::button("Send", &h, move || {
+        let send = kit::glass_button("Send", Some("paperplane.fill"), true, &h, move || {
             with(|w| {
                 let Some((win, text, _)) = w.editor.borrow().as_ref().map(|(a, b, _)| (a.clone(), b.clone(), ())) else { return };
                 match format::parse_raw_request(&ui::text_of(&text)) {
                     Ok(req) => {
-                        win.close();
+                        end_sheet(&win);
                         w.send_replay(req, Some(original));
                     }
                     Err(e) => ui::error("Invalid request", &e),
@@ -393,21 +406,26 @@ impl InspectorWindow {
             })
         });
         send.setKeyEquivalent(&ns("\r"));
-        let cancel = ui::button("Cancel", &h, || {
+        let cancel = kit::glass_button("Cancel", None, false, &h, || {
             with(|w| {
-                if let Some((win, _, _)) = w.editor.borrow().as_ref() {
-                    win.close();
+                let win = w.editor.borrow().as_ref().map(|(win, _, _)| win.clone());
+                if let Some(win) = win {
+                    end_sheet(&win);
                 }
             })
         });
-        let buttons = ui::hstack(&[&ui::spacer(), &cancel, &send], 8.0);
-        let root = ui::vstack(&[&note, &scroll, &buttons], 8.0);
+        let buttons = ui::hstack(&[&ui::spacer(), &cancel, &send], 10.0);
+        let root = ui::vstack(&[&note, &scroll, &buttons], 14.0);
+        ui::pad(&root, 4.0, 4.0);
         ui::fill_width(&root, &scroll);
         ui::fill_width(&root, &buttons);
         ui::set_window_content(&win, &root);
-        ui::show_window(&win);
-        if let Some((old, _, _)) = self.editor.replace(Some((win, text, h))) {
-            old.close();
+        if let Some((old, _, _)) = self.editor.replace(Some((win.clone(), text, h))) {
+            end_sheet(&old);
+        }
+        match super::main::window() {
+            Some(parent) => parent.beginSheet_completionHandler(&win, None),
+            None => ui::show_window(&win),
         }
     }
 }
@@ -500,5 +518,13 @@ fn http_reason(code: u16) -> &'static str {
         503 => "Service Unavailable",
         504 => "Gateway Timeout",
         _ => "",
+    }
+}
+
+/// Close a sheet (or a plain window when shown without a parent).
+fn end_sheet(win: &NSWindow) {
+    match win.sheetParent() {
+        Some(parent) => parent.endSheet(win),
+        None => win.close(),
     }
 }

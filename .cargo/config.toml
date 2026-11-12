@@ -1,0 +1,3 @@
+[env]
+# Matches LSMinimumSystemVersion in packaging/Info.plist.
+MACOSX_DEPLOYMENT_TARGET = "13.0"

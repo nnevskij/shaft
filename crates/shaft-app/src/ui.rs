@@ -13,11 +13,11 @@ use objc2::{
     sel, DefinedClass, MainThreadMarker, MainThreadOnly, Message,
 };
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor, NSControlSize,
-    NSControlStateValueOff, NSControlStateValueOn, NSControlTextEditingDelegate, NSFont, NSFontWeightRegular, NSLayoutAttribute,
-    NSLayoutConstraintOrientation, NSLineBreakMode, NSModalResponseOK, NSOpenPanel, NSPasteboard, NSPasteboardTypeString, NSPopUpButton,
-    NSSavePanel, NSScrollView, NSSecureTextField, NSStackView, NSStackViewDistribution, NSTableColumn, NSTableView, NSTableViewDataSource,
-    NSTableViewDelegate, NSTextField, NSTextView, NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowStyleMask, NSWorkspace,
+    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor,
+    NSControlTextEditingDelegate, NSFont, NSFontWeightRegular, NSLayoutAttribute, NSLayoutConstraintOrientation, NSLineBreakMode,
+    NSModalResponseOK, NSOpenPanel, NSPasteboard, NSPasteboardTypeString, NSPopUpButton, NSSavePanel, NSScrollView, NSSecureTextField,
+    NSStackView, NSStackViewDistribution, NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTextField, NSTextView,
+    NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{NSArray, NSEdgeInsets, NSInteger, NSPoint, NSRect, NSSize, NSString, NSURL};
 
@@ -115,19 +115,6 @@ pub fn wrapping_label(text: &str, width: f64) -> Retained<NSTextField> {
     l
 }
 
-pub fn title_label(text: &str) -> Retained<NSTextField> {
-    let l = label(text);
-    l.setFont(Some(&NSFont::boldSystemFontOfSize(13.0)));
-    l
-}
-
-pub fn section_label(text: &str) -> Retained<NSTextField> {
-    let l = label(&text.to_uppercase());
-    l.setFont(Some(&NSFont::boldSystemFontOfSize(10.0)));
-    l.setTextColor(Some(&NSColor::secondaryLabelColor()));
-    l
-}
-
 pub fn secondary_label(text: &str) -> Retained<NSTextField> {
     let l = label(text);
     l.setFont(Some(&NSFont::systemFontOfSize(11.0)));
@@ -152,26 +139,6 @@ pub fn button(title: &str, h: &Handlers, f: impl Fn() + 'static) -> Retained<NSB
     b
 }
 
-pub fn small_button(title: &str, h: &Handlers, f: impl Fn() + 'static) -> Retained<NSButton> {
-    let b = button(title, h, f);
-    b.setControlSize(NSControlSize::Small);
-    b.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-    b
-}
-
-/// Borderless button showing an SF Symbol.
-pub fn icon_button(symbol: &str, tooltip: &str, h: &Handlers, f: impl Fn() + 'static) -> Retained<NSButton> {
-    let b = button("", h, f);
-    if let Some(img) = objc2_app_kit::NSImage::imageWithSystemSymbolName_accessibilityDescription(&ns(symbol), Some(&ns(tooltip))) {
-        b.setImage(Some(&img));
-    } else {
-        b.setTitle(&ns(tooltip));
-    }
-    b.setBordered(false);
-    b.setToolTip(Some(&ns(tooltip)));
-    b
-}
-
 /// Button that looks like a link (used for URLs).
 pub fn link_button(title: &str, h: &Handlers, f: impl Fn() + 'static) -> Retained<NSButton> {
     let b = button(title, h, f);
@@ -180,20 +147,6 @@ pub fn link_button(title: &str, h: &Handlers, f: impl Fn() + 'static) -> Retaine
     b.setContentTintColor(Some(&NSColor::linkColor()));
     b.setLineBreakMode(NSLineBreakMode::ByTruncatingMiddle);
     b
-}
-
-pub fn checkbox(title: &str, checked: bool) -> Retained<NSButton> {
-    let b = unsafe { NSButton::checkboxWithTitle_target_action(&ns(title), None, None, mtm()) };
-    set_checked(&b, checked);
-    b
-}
-
-pub fn is_checked(b: &NSButton) -> bool {
-    b.state() == NSControlStateValueOn
-}
-
-pub fn set_checked(b: &NSButton, v: bool) {
-    b.setState(if v { NSControlStateValueOn } else { NSControlStateValueOff });
 }
 
 pub fn text_field(value: &str, placeholder: &str) -> Retained<NSTextField> {
@@ -308,13 +261,34 @@ pub fn fill_hstack(views: &[&NSView], spacing: f64) -> Retained<NSStackView> {
     s
 }
 
+const FILL_LEADING: &str = "shaft.fill.leading";
+const FILL_TRAILING: &str = "shaft.fill.trailing";
+
+/// Set a stack's insets. Also updates the constraints made by
+/// [`fill_width`] so the order of `pad`/`fill_width` calls does not matter
+/// (previously children kept a zero horizontal margin).
 pub fn pad(s: &NSStackView, v: f64, h: f64) {
-    s.setEdgeInsets(NSEdgeInsets { top: v, left: h, bottom: v, right: h });
+    pad_edges(s, v, h, v, h);
+}
+
+pub fn pad_edges(s: &NSStackView, top: f64, left: f64, bottom: f64, right: f64) {
+    s.setEdgeInsets(NSEdgeInsets { top, left, bottom, right });
+    for c in s.constraints().iter() {
+        match c.identifier().map(|i| i.to_string()).as_deref() {
+            Some(FILL_LEADING) => c.setConstant(left),
+            Some(FILL_TRAILING) => c.setConstant(-right),
+            _ => {}
+        }
+    }
 }
 
 /// Pin a view's width.
 pub fn set_width(v: &NSView, w: f64) {
     v.widthAnchor().constraintEqualToConstant(w).setActive(true);
+}
+
+pub fn set_min_width(v: &NSView, w: f64) {
+    v.widthAnchor().constraintGreaterThanOrEqualToConstant(w).setActive(true);
 }
 
 pub fn set_height(v: &NSView, h: f64) {
@@ -327,26 +301,13 @@ pub fn set_min_height(v: &NSView, h: f64) {
 
 /// Make children of a vertical stack fill its width.
 pub fn fill_width(parent: &NSStackView, child: &NSView) {
-    child.leadingAnchor().constraintEqualToAnchor_constant(&parent.leadingAnchor(), parent.edgeInsets().left).setActive(true);
-    child.trailingAnchor().constraintEqualToAnchor_constant(&parent.trailingAnchor(), -parent.edgeInsets().right).setActive(true);
-}
-
-/// A two-column form: `(label, control)` rows.
-pub fn form(rows: &[(&str, &NSView)], label_width: f64) -> Retained<NSStackView> {
-    let mut row_views: Vec<Retained<NSStackView>> = Vec::new();
-    for (title, control) in rows {
-        let l = label(title);
-        l.setAlignment(objc2_app_kit::NSTextAlignment::Right);
-        set_width(&l, label_width);
-        let r = fill_hstack(&[&l, control], 8.0);
-        row_views.push(r);
-    }
-    let refs: Vec<&NSView> = row_views.iter().map(|r| &***r).collect();
-    let s = vstack(&refs, 8.0);
-    for r in &row_views {
-        fill_width(&s, r);
-    }
-    s
+    let insets = parent.edgeInsets();
+    let l = child.leadingAnchor().constraintEqualToAnchor_constant(&parent.leadingAnchor(), insets.left);
+    l.setIdentifier(Some(&ns(FILL_LEADING)));
+    l.setActive(true);
+    let t = child.trailingAnchor().constraintEqualToAnchor_constant(&parent.trailingAnchor(), -insets.right);
+    t.setIdentifier(Some(&ns(FILL_TRAILING)));
+    t.setActive(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -379,20 +340,6 @@ pub fn set_window_content(w: &NSWindow, content: &NSView) {
     content.topAnchor().constraintEqualToAnchor_constant(&container.topAnchor(), 16.0).setActive(true);
     content.bottomAnchor().constraintEqualToAnchor_constant(&container.bottomAnchor(), -16.0).setActive(true);
     w.setContentView(Some(&container));
-}
-
-/// Like [`set_window_content`] but lets the content keep its natural height
-/// (for fixed-size forms).
-pub fn set_window_content_top(w: &NSWindow, content: &NSView) {
-    set_window_content(w, content);
-    if let Some(container) = w.contentView() {
-        for c in container.constraints().iter() {
-            if c.firstAttribute() == NSLayoutAttribute::Bottom || c.secondAttribute() == NSLayoutAttribute::Bottom {
-                c.setActive(false);
-            }
-        }
-        content.bottomAnchor().constraintLessThanOrEqualToAnchor_constant(&container.bottomAnchor(), -16.0).setActive(true);
-    }
 }
 
 pub fn show_window(w: &NSWindow) {
@@ -447,12 +394,42 @@ pub fn scroll_stack(content: &NSStackView) -> Retained<NSScrollView> {
     scroll.setHasVerticalScroller(true);
     scroll.setDrawsBackground(false);
     let clip = scroll.contentView();
+    // A flipped document view makes the scroll view start at the top.
+    let doc = FlippedView::new_view();
+    doc.setTranslatesAutoresizingMaskIntoConstraints(false);
     content.setTranslatesAutoresizingMaskIntoConstraints(false);
-    scroll.setDocumentView(Some(content));
-    content.leadingAnchor().constraintEqualToAnchor(&clip.leadingAnchor()).setActive(true);
-    content.trailingAnchor().constraintEqualToAnchor(&clip.trailingAnchor()).setActive(true);
-    content.topAnchor().constraintEqualToAnchor(&clip.topAnchor()).setActive(true);
+    doc.addSubview(content);
+    content.leadingAnchor().constraintEqualToAnchor(&doc.leadingAnchor()).setActive(true);
+    content.trailingAnchor().constraintEqualToAnchor(&doc.trailingAnchor()).setActive(true);
+    content.topAnchor().constraintEqualToAnchor(&doc.topAnchor()).setActive(true);
+    content.bottomAnchor().constraintEqualToAnchor(&doc.bottomAnchor()).setActive(true);
+    scroll.setDocumentView(Some(&doc));
+    doc.leadingAnchor().constraintEqualToAnchor(&clip.leadingAnchor()).setActive(true);
+    doc.trailingAnchor().constraintEqualToAnchor(&clip.trailingAnchor()).setActive(true);
+    doc.topAnchor().constraintEqualToAnchor(&clip.topAnchor()).setActive(true);
     scroll
+}
+
+define_class!(
+    /// NSView with a top-left origin (document views that start at the top).
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "ShaftFlippedView"]
+    pub struct FlippedView;
+
+    impl FlippedView {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+    }
+);
+
+impl FlippedView {
+    pub fn new_view() -> Retained<NSView> {
+        let v: Retained<FlippedView> = unsafe { msg_send![FlippedView::alloc(mtm()), init] };
+        Retained::into_super(v)
+    }
 }
 
 fn alert_base(message: &str, info: &str, style: NSAlertStyle) -> Retained<NSAlert> {
@@ -681,9 +658,22 @@ impl Table {
         self.source.ivars().suppress.set(false);
     }
 
-    pub fn selected(&self) -> Option<usize> {
-        let r = self.view.selectedRow();
-        (r >= 0).then_some(r as usize)
+    /// Modern inset list look (rounded selection, no grid, no border).
+    pub fn set_inset_style(&self) {
+        self.view.setStyle(objc2_app_kit::NSTableViewStyle::Inset);
+        self.view.setUsesAlternatingRowBackgroundColors(false);
+        self.view.setRowHeight(24.0);
+        self.scroll.setBorderType(objc2_app_kit::NSBorderType::NoBorder);
+        self.scroll.setDrawsBackground(false);
+    }
+
+    /// Full-width modern table (data grids such as the inspector).
+    pub fn set_full_width_style(&self) {
+        self.view.setStyle(objc2_app_kit::NSTableViewStyle::FullWidth);
+        self.view.setUsesAlternatingRowBackgroundColors(true);
+        self.view.setRowHeight(22.0);
+        self.view.setGridStyleMask(objc2_app_kit::NSTableViewGridLineStyle::empty());
+        self.scroll.setBorderType(objc2_app_kit::NSBorderType::NoBorder);
     }
 
     pub fn len(&self) -> usize {
@@ -695,5 +685,60 @@ impl Table {
         if n > 0 {
             self.view.scrollRowToVisible((n - 1) as NSInteger);
         }
+    }
+}
+
+/// Development aid: log the frames of a container and its pane.
+pub struct DebugViews(pub Retained<NSView>, pub Retained<NSView>);
+// Only used on the main thread (inside `on_main`).
+unsafe impl Send for DebugViews {}
+impl DebugViews {
+    pub fn log(&self) {
+        let f = |v: &NSView| {
+            let r = v.frame();
+            format!("{:.0}x{:.0}@{:.0},{:.0} sub={}", r.size.width, r.size.height, r.origin.x, r.origin.y, v.subviews().len())
+        };
+        tracing::info!(container = %f(&self.0), pane = %f(&self.1), window = self.0.window().is_some(), "debug frames");
+        fn walk(v: &NSView, depth: usize, out: &mut Vec<String>, f: &dyn Fn(&NSView) -> String) {
+            if depth > 6 || out.len() > 60 {
+                return;
+            }
+            out.push(format!("{}{} {}", "  ".repeat(depth), v.class().name().to_string_lossy(), f(v)));
+            for s in v.subviews().iter() {
+                walk(&s, depth + 1, out, f);
+            }
+        }
+        if std::env::var_os("SHAFT_VIEW_TREE").is_some() {
+            let mut out = Vec::new();
+            walk(&self.1, 0, &mut out, &f);
+            tracing::info!("view tree:\n{}", out.join("\n"));
+        }
+    }
+}
+
+/// Development aid: snapshot the largest stack view inside `root` (window
+/// snapshots do not capture glass/scroll-pocket layers).
+pub fn snapshot_content(root: &NSView, name: &str) {
+    fn walk(v: &NSView, best: &mut Option<(f64, Retained<NSView>)>) {
+        if v.isHidden() {
+            return;
+        }
+        if v.class().name().to_string_lossy().contains("NSStackView") {
+            let s = v.frame().size;
+            let area = s.width * s.height;
+            if best.as_ref().map(|(a, _)| area > *a).unwrap_or(true) {
+                *best = Some((area, v.retain()));
+            }
+        }
+        for s in v.subviews().iter() {
+            walk(&s, best);
+        }
+    }
+    let mut best = None;
+    walk(root, &mut best);
+    if let (Some((_, v)), Some(dir)) = (best, std::env::var_os("SHAFT_SNAPSHOT_DIR")) {
+        let file = std::path::PathBuf::from(dir).join(format!("{name}.png"));
+        let ok = snapshot(&v, &file);
+        tracing::info!(file = %file.display(), ok, "content snapshot");
     }
 }

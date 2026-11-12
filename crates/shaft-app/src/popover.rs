@@ -1,20 +1,24 @@
-//! The popover shown from the menu bar icon. Rebuilt from state on each render.
+//! The menu bar popover, Control Center style: rounded modules on the
+//! system popover material (Liquid Glass on macOS 26, vibrancy before).
 
 use std::{cell::RefCell, rc::Rc};
 
 use objc2::rc::Retained;
-use objc2_app_kit::{NSColor, NSStackView, NSView};
-use shaft_config::{Protocol, ProtocolOptions};
+use objc2_app_kit::{NSColor, NSFont, NSSegmentSwitchTracking, NSSegmentedControl, NSStackView, NSView};
+use objc2_foundation::NSArray;
+use shaft_config::Protocol;
 use shaft_core::{TunnelSnapshot, TunnelState};
 use uuid::Uuid;
 
 use crate::{
     app::{app, App},
+    kit::{self, weight, MenuEntry},
     ui::{self, ns, Handlers},
-    windows,
+    windows::{self, main::Section},
 };
 
-const WIDTH: f64 = 380.0;
+const WIDTH: f64 = 360.0;
+const PAD: f64 = 14.0;
 
 thread_local! {
     /// Fixed container installed once as the popover's view (replacing the
@@ -71,10 +75,10 @@ pub fn render(app: &Rc<App>) {
         root
     });
 
-    let content = if app.config.borrow().accounts.is_empty() { onboarding(app, h) } else { main_view(app, h) };
+    let content = if app.config.borrow().accounts.is_empty() { onboarding(h) } else { main_view(app, h) };
     // Pad via a wrapper so the content's children can fill its full width.
     let wrapper = ui::vstack(&[&content], 0.0);
-    ui::pad(&wrapper, 14.0, 14.0);
+    ui::pad(&wrapper, PAD, PAD);
     ui::fill_width(&wrapper, &content);
     ui::set_width(&wrapper, WIDTH);
     wrapper.layoutSubtreeIfNeeded();
@@ -108,19 +112,68 @@ pub fn render(app: &Rc<App>) {
     ui::debug_snapshot("popover", &wrapper);
 }
 
-fn onboarding(_a: &Rc<App>, h: &Handlers) -> Retained<NSStackView> {
-    let title = ui::title_label("Welcome to Shaft");
-    let intro = ui::wrapping_label(
-        "Paste your ngrok authtoken to get started. You can find it in the ngrok dashboard under “Your Authtoken”. It is stored in your Keychain.",
-        WIDTH - 28.0,
-    );
+/// Stack `views` vertically, each filling the width.
+fn column(views: &[Retained<NSView>], spacing: f64) -> Retained<NSStackView> {
+    let refs: Vec<&NSView> = views.iter().map(|v| &**v).collect();
+    let s = ui::vstack(&refs, spacing);
+    for v in views {
+        ui::fill_width(&s, v);
+    }
+    s
+}
+
+fn section_title(text: &str) -> Retained<NSView> {
+    let l = ui::label(text);
+    l.setFont(Some(&NSFont::systemFontOfSize_weight(12.0, weight::SEMIBOLD)));
+    l.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    let s = ui::hstack(&[&l], 0.0);
+    ui::pad_edges(&s, 2.0, kit::space::CARD_H, 0.0, kit::space::CARD_H);
+    ui::v(&*s)
+}
+
+fn header(subtitle: &str, trailing: Option<&NSView>) -> Retained<NSView> {
+    let tile = kit::icon_tile("arrow.up.and.down", &NSColor::systemIndigoColor(), 30.0);
+    let title = ui::label("Shaft");
+    title.setFont(Some(&NSFont::systemFontOfSize_weight(14.0, weight::SEMIBOLD)));
+    let sub = ui::secondary_label(subtitle);
+    let texts = ui::vstack(&[&title, &sub], 1.0);
+    let mut items: Vec<&NSView> = vec![&tile, &texts];
+    let spacer = ui::spacer();
+    items.push(&spacer);
+    if let Some(t) = trailing {
+        items.push(t);
+    }
+    ui::v(&*ui::fill_hstack(&items, 10.0))
+}
+
+fn error_label(e: &shaft_core::CoreError) -> Retained<NSView> {
+    let mut text = e.to_string();
+    if let Some(hint) = e.hint() {
+        text.push_str(&format!("\n{hint}"));
+    }
+    let icon = kit::symbol_view("exclamationmark.triangle.fill", 11.0, Some(&NSColor::systemRedColor()));
+    let l = ui::wrapping_label(&text, WIDTH - 80.0);
+    l.setTextColor(Some(&NSColor::systemRedColor()));
+    l.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+    let row = ui::hstack(&[&icon, &l], 6.0);
+    row.setAlignment(objc2_app_kit::NSLayoutAttribute::Top);
+    ui::v(&*row)
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding
+// ---------------------------------------------------------------------------
+
+fn onboarding(h: &Handlers) -> Retained<NSStackView> {
+    let intro =
+        kit::footnote("Paste your ngrok authtoken to get started. It is stored in your Keychain, never on disk.", WIDTH - 2.0 * PAD - 24.0);
     let name = ui::text_field("Personal", "Account name");
     let token = ui::secure_field("", "Authtoken");
     let status = ui::secondary_label("");
     let name_c = name.clone();
     let token_c = token.clone();
     let status_c = status.clone();
-    let connect = ui::button("Connect", h, move || {
+    let connect = kit::glass_button("Connect", Some("bolt.horizontal.fill"), true, h, move || {
         let tok = token_c.stringValue().to_string();
         if tok.trim().is_empty() {
             status_c.setStringValue(&ns("Enter an authtoken."));
@@ -131,24 +184,31 @@ fn onboarding(_a: &Rc<App>, h: &Handlers) -> Retained<NSStackView> {
         windows::accounts::validate_and_add(account, status_c.clone());
     });
     connect.setKeyEquivalent(&ns("\r"));
-    let dashboard = ui::link_button("Open dashboard ↗", h, || ui::open_url("https://dashboard.ngrok.com/get-started/your-authtoken"));
-    let import = ui::button("Import ngrok.yml…", h, || windows::accounts::import_ngrok_yml(None));
-    let quit = ui::small_button("Quit", h, || app().quit());
+    let get = ui::link_button("Get your authtoken ↗", h, || ui::open_url("https://dashboard.ngrok.com/get-started/your-authtoken"));
+    let form = column(
+        &[ui::v(&*intro), ui::v(&*name), ui::v(&*token), ui::v(&*ui::hstack(&[&get, &ui::spacer(), &connect], 8.0)), ui::v(&*status)],
+        10.0,
+    );
+    let module = kit::card_padded(&form, 12.0, kit::space::CARD_H);
 
-    let buttons = ui::hstack(&[&connect, &import, &ui::spacer(), &quit], 8.0);
-    let s = ui::vstack(&[&title, &intro, &name, &token, &buttons, &status, &dashboard], 10.0);
-    for v in [&*name as &NSView, &token, &buttons] {
-        ui::fill_width(&s, v);
-    }
-    s
+    let import =
+        kit::glass_button("Import ngrok.yml…", Some("square.and.arrow.down"), false, h, || windows::accounts::import_ngrok_yml(None));
+    let quit = kit::glass_button("Quit", None, false, h, || app().quit());
+    let footer = ui::hstack(&[&import, &ui::spacer(), &quit], 8.0);
+    column(&[header("Welcome", None), ui::v(&*module), ui::v(&*footer)], 14.0)
 }
+
+// ---------------------------------------------------------------------------
+// Main view
+// ---------------------------------------------------------------------------
 
 fn main_view(a: &Rc<App>, h: &Handlers) -> Retained<NSStackView> {
     let cfg = a.config.borrow().clone();
     let snaps = a.core.snapshots();
+    let online = snaps.iter().filter(|s| s.state.is_online()).count();
     let mut views: Vec<Retained<NSView>> = Vec::new();
 
-    // Header: title + account selector.
+    // Header with account selector.
     let names: Vec<String> = cfg.accounts.iter().map(|a| a.name.clone()).collect();
     let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
     let active = cfg.active_account().map(|a| a.id);
@@ -159,164 +219,212 @@ fn main_view(a: &Rc<App>, h: &Handlers) -> Retained<NSStackView> {
         app.config.borrow_mut().settings.active_account = ids.get(i).copied();
         app.save();
     });
-    account_popup.setToolTip(Some(&ns("Account used for quick tunnels and the Account window")));
-    let header = ui::hstack(&[&ui::title_label("Shaft"), &ui::spacer(), &account_popup], 8.0);
-    views.push(ui::v(&*header));
+    account_popup.setControlSize(objc2_app_kit::NSControlSize::Small);
+    account_popup.setToolTip(Some(&ns("Account for quick tunnels and resources")));
+    let subtitle = match online {
+        0 if snaps.is_empty() => "No active tunnels".to_string(),
+        0 => "Connecting…".to_string(),
+        1 => "1 tunnel online".to_string(),
+        n => format!("{n} tunnels online"),
+    };
+    views.push(header(&subtitle, (cfg.accounts.len() > 1).then_some(&**account_popup)));
 
-    // Quick tunnel.
-    views.push(ui::v(&*ui::section_label("Quick tunnel")));
+    // Quick tunnel module.
+    views.push(quick_module(a, h));
+
+    // Active tunnels.
+    if !snaps.is_empty() {
+        views.push(section_title("Active"));
+        for s in &snaps {
+            views.push(tunnel_module(s, h));
+        }
+    }
+
+    // Profiles module.
+    views.push(section_title("Profiles"));
+    views.push(profiles_module(a, &cfg, &snaps, h));
+
+    // Footer.
+    let open = kit::plain_icon("macwindow", "Open Shaft", 15.0, h, || windows::main::show(Section::Tunnels));
+    let inspector = kit::plain_icon("waveform.path.ecg.rectangle", "Inspector", 15.0, h, || windows::main::show(Section::Inspector));
+    let resources = kit::plain_icon("globe", "ngrok Resources", 15.0, h, || windows::main::show(Section::Resources));
+    let settings = kit::plain_icon("gearshape", "Settings", 15.0, h, || windows::main::show(Section::Settings));
+    let quit = kit::glass_button("Quit", None, false, h, || app().quit());
+    quit.setControlSize(objc2_app_kit::NSControlSize::Small);
+    let footer = ui::hstack(&[&open, &inspector, &resources, &settings, &ui::spacer(), &quit], 16.0);
+    ui::pad_edges(&footer, 2.0, 8.0, 0.0, 2.0);
+    views.push(ui::v(&*footer));
+
+    column(&views, 12.0)
+}
+
+fn quick_module(a: &Rc<App>, h: &Handlers) -> Retained<NSView> {
     let q = a.quick.borrow().clone();
-    let protos: Vec<&str> = Protocol::ALL.iter().map(|p| p.label()).collect();
-    let proto_popup = ui::popup_with(&protos, Protocol::ALL.iter().position(|p| *p == q.protocol).unwrap_or(0), h, |i| {
-        app().quick.borrow_mut().protocol = Protocol::ALL[i];
+    let labels: Vec<Retained<objc2_foundation::NSString>> = Protocol::ALL.iter().map(|p| ns(p.label())).collect();
+    let seg = unsafe {
+        NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
+            &NSArray::from_retained_slice(&labels),
+            NSSegmentSwitchTracking::SelectOne,
+            None,
+            None,
+            ui::mtm(),
+        )
+    };
+    seg.setSelectedSegment(Protocol::ALL.iter().position(|p| *p == q.protocol).unwrap_or(0) as isize);
+    seg.setControlSize(objc2_app_kit::NSControlSize::Small);
+    let seg_w = objc2::rc::Weak::from_retained(&seg);
+    ui::on_action(&seg, h, move || {
+        if let Some(s) = seg_w.load() {
+            app().quick.borrow_mut().protocol = Protocol::ALL[s.selectedSegment().clamp(0, 2) as usize];
+        }
     });
-    let field = ui::text_field(&q.upstream, "3000, host:port or URL");
-    let start = ui::button("Start", h, || app().start_quick());
+
+    let field = ui::text_field(&q.upstream, "Port, host:port or URL");
+    kit::rounded(&field);
     let field_c = field.clone();
     ui::on_action(&field, h, move || {
         app().quick.borrow_mut().upstream = ui::value(&field_c);
         app().start_quick();
     });
     *a.quick_field.borrow_mut() = Some(field.clone());
-    let quick = ui::fill_hstack(&[&proto_popup, &field, &start], 6.0);
-    views.push(ui::v(&*quick));
+    let start = kit::round_button("play.fill", "Start tunnel", true, h, || app().start_quick());
+
+    let title = ui::label("Quick Tunnel");
+    title.setFont(Some(&NSFont::systemFontOfSize_weight(13.0, weight::SEMIBOLD)));
+    let top = ui::hstack(&[&title, &ui::spacer(), &seg], 8.0);
+    let input = ui::fill_hstack(&[&field, &start], 8.0);
+    let mut rows = vec![ui::v(&*top), ui::v(&*input)];
     if let Some((name, e)) = a.quick_error.borrow().as_ref() {
         let mut e = e.clone();
         e.message = format!("{name}: {}", e.message);
-        views.push(error_label(&e));
+        rows.push(error_label(&e));
+    }
+    ui::v(&*kit::card_padded(&column(&rows, 10.0), 12.0, kit::space::CARD_H))
+}
+
+fn state_color(s: &TunnelState) -> Retained<NSColor> {
+    match s {
+        TunnelState::Online => NSColor::systemGreenColor(),
+        TunnelState::Starting => NSColor::systemYellowColor(),
+        TunnelState::Reconnecting { .. } => NSColor::systemOrangeColor(),
+        TunnelState::Failed(_) => NSColor::systemRedColor(),
+        TunnelState::Stopping => NSColor::tertiaryLabelColor(),
+    }
+}
+
+fn tunnel_module(s: &TunnelSnapshot, h: &Handlers) -> Retained<NSView> {
+    let run = s.run_id;
+    let dot = kit::dot(&state_color(&s.state));
+    let name = ui::label(&s.name);
+    name.setFont(Some(&NSFont::systemFontOfSize_weight(13.0, weight::SEMIBOLD)));
+    ui::resist_compression(&name);
+    let proto = kit::badge(s.protocol.label(), &NSColor::systemIndigoColor());
+
+    let mut menu = Vec::new();
+    if let Some(url) = &s.public_url {
+        let (u1, u2) = (url.clone(), url.clone());
+        menu.push(MenuEntry::item("Copy URL", "doc.on.doc", move || app().copy_url(&u1)));
+        menu.push(MenuEntry::item("Open in Browser", "safari", move || ui::open_url(&u2)));
+    }
+    if s.inspect {
+        menu.push(MenuEntry::item("Inspect Traffic", "waveform.path.ecg.rectangle", move || windows::inspector::open(Some(run))));
+    }
+    menu.push(MenuEntry::Separator);
+    menu.push(MenuEntry::destructive("Stop", "stop.fill", move || app().core.stop(run)));
+    let more = kit::menu_button("More", h, menu);
+    let toggle = kit::switch_with(!matches!(s.state, TunnelState::Stopping), h, move |on| {
+        if !on {
+            app().core.stop(run);
+        }
+    });
+    let top = ui::hstack(&[&dot, &name, &proto, &ui::spacer(), &more, &toggle], 6.0);
+    let mut rows = vec![ui::v(&*top)];
+
+    match &s.public_url {
+        Some(url) => {
+            let u = url.clone();
+            let link = ui::link_button(url.trim_start_matches("https://"), h, move || app().copy_url(&u));
+            link.setToolTip(Some(&ns("Click to copy")));
+            let u2 = url.clone();
+            let copy = kit::plain_icon("doc.on.doc", "Copy URL", 12.0, h, move || app().copy_url(&u2));
+            rows.push(ui::v(&*ui::hstack(&[&link, &copy, &ui::spacer()], 4.0)));
+        }
+        None => rows.push(ui::v(&*ui::secondary_label(s.state.label()))),
     }
 
-    // Active tunnels.
-    views.push(ui::v(&*ui::section_label(&format!("Active ({})", snaps.len()))));
-    if snaps.is_empty() {
-        views.push(ui::v(&*ui::secondary_label("No active tunnels.")));
+    let mut meta = format!("→ {}", s.upstream);
+    if s.inspect {
+        meta.push_str(&format!("  ·  {} requests", s.requests));
     }
-    for s in &snaps {
-        views.push(tunnel_row(s, h));
+    if let TunnelState::Reconnecting { attempt } = s.state {
+        meta.push_str(&format!("  ·  reconnecting (#{attempt})"));
     }
+    rows.push(ui::v(&*ui::secondary_label(&meta)));
+    if s.upstream_reachable == Some(false) {
+        let icon = kit::symbol_view("exclamationmark.triangle.fill", 11.0, Some(&NSColor::systemOrangeColor()));
+        let l = ui::colored_label("Local service not reachable", &NSColor::systemOrangeColor());
+        rows.push(ui::v(&*ui::hstack(&[&icon, &l], 6.0)));
+    }
+    if let TunnelState::Failed(e) = &s.state {
+        rows.push(error_label(e));
+    }
+    ui::v(&*kit::card_padded(&column(&rows, 6.0), 12.0, kit::space::CARD_H))
+}
 
-    // Profiles.
-    views.push(ui::v(&*ui::section_label("Profiles")));
+fn profiles_module(a: &Rc<App>, cfg: &shaft_config::AppConfig, snaps: &[TunnelSnapshot], h: &Handlers) -> Retained<NSView> {
     let mut profiles = cfg.profiles.clone();
     profiles.sort_by_key(|p| (!p.favorite, p.name.to_lowercase()));
-    if profiles.is_empty() {
-        views.push(ui::v(&*ui::secondary_label("Save tunnels you use often as profiles.")));
-    }
+    let mut rows: Vec<Retained<NSView>> = Vec::new();
     for p in &profiles {
-        let running = snaps.iter().any(|s| s.profile_id == p.id);
         let pid = p.id;
-        let star = ui::icon_button(if p.favorite { "star.fill" } else { "star" }, "Favorite", h, move || {
+        let running = snaps.iter().any(|s| s.profile_id == pid);
+        let star = kit::plain_icon(if p.favorite { "star.fill" } else { "star" }, "Favorite", 12.0, h, move || {
             let app = app();
             if let Some(p) = app.config.borrow_mut().profile_mut(pid) {
                 p.favorite = !p.favorite;
             }
             app.save();
         });
-        let acc = cfg.account(p.account_id).map(|a| a.name.as_str()).unwrap_or("?");
-        let target = match &p.options {
-            ProtocolOptions::Http(_) => format!("http → {}", p.upstream),
-            ProtocolOptions::Tcp(_) => format!("tcp → {}", p.upstream),
-            ProtocolOptions::Tls(_) => format!("tls → {}", p.upstream),
-        };
-        let subtitle = if cfg.accounts.len() > 1 { format!("{target} · {acc}") } else { target };
+        if p.favorite {
+            star.setContentTintColor(Some(&NSColor::systemYellowColor()));
+        }
         let name = ui::label(&p.name);
-        let sub = ui::secondary_label(&subtitle);
         ui::resist_compression(&name);
-        ui::resist_compression(&sub);
+        let acc = cfg.account(p.account_id).map(|a| a.name.as_str()).unwrap_or("?");
+        let mut sub = format!("{} → {}", p.protocol().as_str(), p.upstream);
+        if cfg.accounts.len() > 1 {
+            sub.push_str(&format!(" · {acc}"));
+        }
+        let sub = ui::secondary_label(&sub);
         let texts = ui::vstack(&[&name, &sub], 1.0);
-        let toggle = ui::small_button(if running { "Stop" } else { "Start" }, h, move || app().toggle_profile(pid));
-        let edit = ui::icon_button("slider.horizontal.3", "Edit profile", h, move || windows::profile::open(Some(pid)));
-        let row = ui::hstack(&[&star, &texts, &ui::spacer(), &toggle, &edit], 6.0);
-        views.push(ui::v(&*row));
+        let more = kit::menu_button(
+            "Profile actions",
+            h,
+            vec![
+                MenuEntry::item("Edit…", "slider.horizontal.3", move || windows::profile::open(Some(pid))),
+                MenuEntry::item(if running { "Stop" } else { "Start" }, if running { "stop.fill" } else { "play.fill" }, move || {
+                    app().toggle_profile(pid)
+                }),
+            ],
+        );
+        let toggle = kit::play_button(running, h, move || app().toggle_profile(pid));
+        let row = ui::hstack(&[&star, &texts, &ui::spacer(), &more, &toggle], 10.0);
+        let mut block = vec![ui::v(&*row)];
         if !running {
             if let Some(e) = a.failures.borrow().get(&pid) {
-                views.push(error_label(e));
+                block.push(error_label(e));
             }
         }
+        rows.push(ui::v(&*column(&block, 6.0)));
     }
-    let new_profile = ui::small_button("New profile…", h, || windows::profile::open(None));
-    let stop_all = ui::small_button("Stop all", h, || app().core.stop_all());
-    stop_all.setEnabled(!snaps.is_empty());
-    views.push(ui::v(&*ui::hstack(&[&new_profile, &ui::spacer(), &stop_all], 6.0)));
-
-    // Footer.
-    views.push(ui::v(&*ui::separator()));
-    let inspector = ui::icon_button("list.bullet.rectangle", "Inspector", h, || windows::inspector::open(None));
-    let resources = ui::icon_button("globe", "ngrok resources (domains, endpoints, …)", h, windows::resources::open);
-    let accounts = ui::icon_button("person.crop.circle", "Accounts", h, windows::accounts::open);
-    let diag = ui::icon_button("stethoscope", "Diagnostics", h, windows::diagnostics::open);
-    let settings = ui::icon_button("gearshape", "Settings", h, windows::settings::open);
-    let quit = ui::small_button("Quit", h, || app().quit());
-    let footer = ui::hstack(&[&inspector, &resources, &accounts, &diag, &settings, &ui::spacer(), &quit], 10.0);
-    views.push(ui::v(&*footer));
-
-    let refs: Vec<&NSView> = views.iter().map(|v| &**v).collect();
-    let stack = ui::vstack(&refs, 8.0);
-    for v in &views {
-        ui::fill_width(&stack, v);
+    if rows.is_empty() {
+        rows.push(ui::v(&*kit::footnote("Save tunnels you use often as profiles.", WIDTH - 60.0)));
     }
-    stack
-}
-
-fn error_label(e: &shaft_core::CoreError) -> Retained<NSView> {
-    let mut text = format!("⚠ {e}");
-    if let Some(hint) = e.hint() {
-        text.push_str(&format!("\n{hint}"));
-    }
-    let l = ui::wrapping_label(&text, WIDTH - 40.0);
-    l.setTextColor(Some(&NSColor::systemRedColor()));
-    l.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(11.0)));
-    ui::v(&*l)
-}
-
-fn tunnel_row(s: &TunnelSnapshot, h: &Handlers) -> Retained<NSView> {
-    let run = s.run_id;
-    let (dot_color, state_text) = match &s.state {
-        TunnelState::Online => (NSColor::systemGreenColor(), "Online".to_string()),
-        TunnelState::Starting => (NSColor::systemYellowColor(), "Starting…".into()),
-        TunnelState::Reconnecting { attempt } => (NSColor::systemOrangeColor(), format!("Reconnecting (#{attempt})…")),
-        TunnelState::Failed(_) => (NSColor::systemRedColor(), "Error".into()),
-        TunnelState::Stopping => (NSColor::secondaryLabelColor(), "Stopping…".into()),
-    };
-    let dot = ui::colored_label("●", &dot_color);
-    let name = ui::label(&s.name);
-    ui::resist_compression(&name);
-    let mut meta = format!("{} · {}", s.protocol.label(), state_text);
-    if s.inspect {
-        meta.push_str(&format!(" · {} req", s.requests));
-    }
-    let meta = ui::secondary_label(&meta);
-    let stop = ui::icon_button("stop.circle", "Stop", h, move || app().core.stop(run));
-    let top = ui::hstack(&[&dot, &name, &meta, &ui::spacer(), &stop], 6.0);
-
-    let mut rows: Vec<Retained<NSView>> = vec![ui::v(&*top)];
-    if let Some(url) = &s.public_url {
-        let u = url.clone();
-        let link = ui::link_button(url, h, move || app().copy_url(&u));
-        link.setToolTip(Some(&ns("Click to copy")));
-        let u2 = url.clone();
-        let open = ui::icon_button("safari", "Open in browser", h, move || ui::open_url(&u2));
-        let mut items: Vec<Retained<NSView>> = vec![ui::v(&*link), ui::v(&*ui::spacer())];
-        if s.inspect {
-            let inspect = ui::icon_button("list.bullet.rectangle", "Inspect traffic", h, move || windows::inspector::open(Some(run)));
-            items.push(ui::v(&*inspect));
-        }
-        items.push(ui::v(&*open));
-        let refs: Vec<&NSView> = items.iter().map(|v| &**v).collect();
-        rows.push(ui::v(&*ui::hstack(&refs, 6.0)));
-    }
-    rows.push(ui::v(&*ui::secondary_label(&format!("→ {}", s.upstream))));
-    if s.upstream_reachable == Some(false) {
-        let l = ui::colored_label("⚠ Upstream unreachable — is your local service running?", &NSColor::systemOrangeColor());
-        rows.push(ui::v(&*l));
-    }
-    if let TunnelState::Failed(e) = &s.state {
-        rows.push(error_label(e));
-    }
-    let refs: Vec<&NSView> = rows.iter().map(|v| &**v).collect();
-    let block = ui::vstack(&refs, 2.0);
-    for r in &rows {
-        ui::fill_width(&block, r);
-    }
-    ui::v(&*block)
+    let new = ui::link_button("New Profile…", h, || windows::profile::open(None));
+    new.setFont(Some(&NSFont::systemFontOfSize(12.0)));
+    let stop_all = ui::link_button("Stop All", h, || app().core.stop_all());
+    stop_all.setFont(Some(&NSFont::systemFontOfSize(12.0)));
+    stop_all.setHidden(snaps.is_empty());
+    rows.push(ui::v(&*ui::hstack(&[&new, &ui::spacer(), &stop_all], 8.0)));
+    ui::v(&*kit::group(&rows))
 }

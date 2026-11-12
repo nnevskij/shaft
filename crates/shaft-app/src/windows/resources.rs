@@ -1,4 +1,4 @@
-//! ngrok account resources over the REST API (`ngrok api …` parity):
+//! ngrok Resources pane over the REST API (`ngrok api …` parity):
 //! catalogued resources with list/create/update/delete/actions, plus a
 //! generic API explorer for everything else.
 
@@ -8,14 +8,16 @@ use std::{
 };
 
 use objc2::rc::Retained;
-use objc2_app_kit::{NSButton, NSPopUpButton, NSStackView, NSTextField, NSTextView, NSView, NSWindow};
+use objc2_app_kit::{NSButton, NSPopUpButton, NSStackView, NSTextField, NSTextView, NSView};
 use serde_json::Value;
 use shaft_api::{cell, ApiClient, Method, ResourceKind, RESOURCES};
 use shaft_config::{Protocol, TunnelProfile};
 use uuid::Uuid;
 
+use super::main::Section;
 use crate::{
     app::app,
+    kit,
     platform::on_main,
     ui::{self, ns, Handlers, Table},
 };
@@ -23,12 +25,14 @@ use crate::{
 const EXPLORER: &str = "API Explorer";
 const HTTP_METHODS: [&str; 5] = ["GET", "POST", "PATCH", "PUT", "DELETE"];
 
-pub struct ResourcesWindow {
-    pub window: Retained<NSWindow>,
+pub struct ResourcesPane {
+    pub view: Retained<NSView>,
     _handlers: Handlers,
     account_ids: RefCell<Vec<Uuid>>,
     account: Retained<NSPopUpButton>,
-    kind: Retained<NSPopUpButton>,
+    _kinds: Table,
+    kind_index: Cell<usize>,
+    title: Retained<NSTextField>,
     status: Retained<NSTextField>,
     // Resource mode
     resource_box: Retained<NSStackView>,
@@ -54,101 +58,136 @@ pub struct ResourcesWindow {
 }
 
 pub fn open() {
-    let app = app();
-    app.close_popover();
-    let existing = app.windows.resources.borrow().clone();
-    let w = match existing {
-        Some(w) => w,
-        None => {
-            let w = Rc::new(build());
-            *app.windows.resources.borrow_mut() = Some(w.clone());
-            w
-        }
-    };
-    w.reload_accounts();
-    ui::show_window(&w.window);
-    w.kind_changed();
+    super::main::show(Section::Resources);
 }
 
-fn with(f: impl FnOnce(&ResourcesWindow)) {
+pub fn pane() -> Retained<NSView> {
+    let w = Rc::new(build());
+    *app().windows.resources.borrow_mut() = Some(w.clone());
+    w.reload_accounts();
+    w.kind_changed();
+    w.view.clone()
+}
+
+fn with(f: impl FnOnce(&ResourcesPane)) {
     let w = app().windows.resources.borrow().clone();
     if let Some(w) = w {
         f(&w);
     }
 }
 
-fn build() -> ResourcesWindow {
-    let h = Handlers::new();
-    let window = ui::window("ngrok Resources", 1000.0, 680.0, true);
-    window.setFrameAutosaveName(&ns("ShaftResources"));
+fn card_area(scroll: &NSView) -> Retained<NSView> {
+    ui::v(&*kit::card(scroll, 0.0))
+}
 
+fn build() -> ResourcesPane {
+    let h = Handlers::new();
+
+    // Left: resource kinds.
+    let kinds = Table::new(&[("Resource", 180.0)]);
+    kinds.set_inset_style();
+    let mut kind_rows: Vec<Vec<String>> = RESOURCES.iter().map(|r| vec![r.title.to_string()]).collect();
+    kind_rows.push(vec![EXPLORER.to_string()]);
+    kinds.set_rows(kind_rows, Some(0));
+    kinds.on_select(|i| {
+        with(|w| {
+            if let Some(i) = i {
+                if i != w.kind_index.get() {
+                    w.kind_index.set(i);
+                    w.kind_changed();
+                }
+            }
+        })
+    });
+    let dashboard = ui::link_button("Open Dashboard ↗", &h, || ui::open_url("https://dashboard.ngrok.com"));
+    let left = ui::vstack(&[&kinds.scroll, &dashboard], 12.0);
+    ui::fill_width(&left, &kinds.scroll);
+    kinds.scroll.setContentHuggingPriority_forOrientation(1.0, objc2_app_kit::NSLayoutConstraintOrientation::Vertical);
+
+    // Right: header.
+    let title = kit::pane_title("");
     let account = ui::popup(&[], 0);
     ui::on_action(&account, &h, || with(|w| w.kind_changed()));
-    let mut kinds: Vec<&str> = RESOURCES.iter().map(|r| r.title).collect();
-    kinds.push(EXPLORER);
-    let kind = ui::popup(&kinds, 0);
-    ui::on_action(&kind, &h, || with(|w| w.kind_changed()));
-    let refresh = ui::button("Refresh", &h, || with(|w| w.refresh()));
-    let dashboard = ui::link_button("Dashboard ↗", &h, || ui::open_url("https://dashboard.ngrok.com"));
-    let status = ui::label("");
-    let toolbar =
-        ui::fill_hstack(&[&ui::label("Account"), &account, &ui::label("Resource"), &kind, &refresh, &ui::spacer(), &dashboard], 8.0);
+    let refresh = kit::glass_button("", Some("arrow.clockwise"), false, &h, || with(|w| w.refresh()));
+    refresh.setToolTip(Some(&ns("Refresh")));
+    let header = ui::fill_hstack(&[&title, &ui::spacer(), &ui::secondary_label("Account"), &account, &refresh], 8.0);
+    let status = kit::footnote("", 600.0);
 
     // Resource mode.
     let table = Table::new(&[("", 100.0)]);
     let table_holder = ui::vstack(&[&table.scroll], 0.0);
     ui::fill_width(&table_holder, &table.scroll);
-    ui::set_height(&table_holder, 260.0);
+    let table_card = kit::card(&table_holder, 0.0);
+    ui::set_height(&table_holder, 250.0);
     let (editor_scroll, editor) = ui::text_area("", true, true);
-    ui::set_min_height(&editor_scroll, 200.0);
-    let new = ui::button("New", &h, || with(|w| w.new_item()));
-    let create = ui::button("Create", &h, || with(|w| w.create_item()));
-    let save = ui::button("Save changes", &h, || with(|w| w.update_item()));
-    let delete = ui::button("Delete…", &h, || with(|w| w.delete_item()));
-    let use_domain = ui::button("New tunnel profile with this…", &h, || with(|w| w.profile_from_item()));
+    editor_scroll.setBorderType(objc2_app_kit::NSBorderType::NoBorder);
+    editor.setTextContainerInset(objc2_foundation::NSSize::new(8.0, 8.0));
+    ui::set_min_height(&editor_scroll, 180.0);
+    let new = kit::glass_button("New", Some("plus"), false, &h, || with(|w| w.new_item()));
+    let create = kit::glass_button("Create", None, true, &h, || with(|w| w.create_item()));
+    let save = kit::glass_button("Save Changes", None, true, &h, || with(|w| w.update_item()));
+    let delete = kit::glass_button("Delete…", Some("trash"), false, &h, || with(|w| w.delete_item()));
+    let use_domain =
+        kit::glass_button("New Tunnel Profile", Some("arrow.up.and.down.circle"), false, &h, || with(|w| w.profile_from_item()));
     let actions_box = ui::hstack(&[], 8.0);
-    let item_bar = ui::hstack(&[&new, &create, &save, &delete, &use_domain, &actions_box, &ui::spacer()], 8.0);
-    let resource_box = ui::vstack(&[&table_holder, &item_bar, &editor_scroll], 8.0);
-    for v in [&*table_holder as &NSView, &item_bar, &editor_scroll] {
+    let item_bar = ui::hstack(&[&new, &use_domain, &actions_box, &ui::spacer(), &delete, &create, &save], 10.0);
+    let json_label = ui::secondary_label("JSON — select an item to edit it, or press New");
+    let editor_card = card_area(&editor_scroll);
+    let resource_box = ui::vstack(&[&table_card, &item_bar, &json_label, &editor_card], 12.0);
+    for v in [&*table_card as &NSView, &item_bar, &editor_card] {
         ui::fill_width(&resource_box, v);
     }
 
     // Explorer mode.
     let ex_method = ui::popup(&HTTP_METHODS, 0);
     let ex_path = ui::text_field("/endpoints", "/path?query (relative to https://api.ngrok.com)");
-    let send = ui::button("Send", &h, || with(|w| w.explore()));
-    let docs = ui::link_button("API reference ↗", &h, || ui::open_url("https://ngrok.com/docs/api/"));
-    let ex_bar = ui::fill_hstack(&[&ex_method, &ex_path, &send, &docs], 8.0);
+    kit::rounded(&ex_path);
+    let send = kit::glass_button("Send", Some("paperplane.fill"), true, &h, || with(|w| w.explore()));
+    let docs = ui::link_button("API Reference ↗", &h, || ui::open_url("https://ngrok.com/docs/api/"));
+    let ex_bar = ui::fill_hstack(&[&ex_method, &ex_path, &send], 8.0);
     let (ex_body_scroll, ex_body) = ui::text_area("", true, true);
-    ui::set_height(&ex_body_scroll, 120.0);
+    ex_body_scroll.setBorderType(objc2_app_kit::NSBorderType::NoBorder);
+    ui::set_height(&ex_body_scroll, 110.0);
     let (ex_result_scroll, ex_result) = ui::text_area("", true, false);
-    ui::set_min_height(&ex_result_scroll, 300.0);
+    ex_result_scroll.setBorderType(objc2_app_kit::NSBorderType::NoBorder);
+    ui::set_min_height(&ex_result_scroll, 260.0);
+    let body_card = card_area(&ex_body_scroll);
+    let result_card = card_area(&ex_result_scroll);
     let explorer_box = ui::vstack(
-        &[
-            &ex_bar,
-            &ui::secondary_label("JSON body (for POST/PATCH/PUT)"),
-            &ex_body_scroll,
-            &ui::secondary_label("Response"),
-            &ex_result_scroll,
-        ],
+        &[&ex_bar, &ui::secondary_label("JSON body (POST/PATCH/PUT)"), &body_card, &ui::secondary_label("Response"), &result_card, &docs],
         8.0,
     );
-    for v in [&*ex_bar as &NSView, &ex_body_scroll, &ex_result_scroll] {
+    for v in [&*ex_bar as &NSView, &body_card, &result_card] {
         ui::fill_width(&explorer_box, v);
     }
 
-    let root = ui::vstack(&[&toolbar, &resource_box, &explorer_box, &status], 10.0);
-    for v in [&*toolbar as &NSView, &resource_box, &explorer_box, &status] {
-        ui::fill_width(&root, v);
+    let right = ui::vstack(&[&header, &resource_box, &explorer_box, &status], 18.0);
+    for v in [&*header as &NSView, &resource_box, &explorer_box, &status] {
+        ui::fill_width(&right, v);
     }
-    ui::set_window_content(&window, &root);
 
-    ResourcesWindow {
-        window,
+    let root = NSView::new(ui::mtm());
+    for v in [&*left as &NSView, &right] {
+        v.setTranslatesAutoresizingMaskIntoConstraints(false);
+        root.addSubview(v);
+    }
+    left.leadingAnchor().constraintEqualToAnchor_constant(&root.leadingAnchor(), 20.0).setActive(true);
+    left.topAnchor().constraintEqualToAnchor_constant(&root.topAnchor(), 20.0).setActive(true);
+    left.bottomAnchor().constraintEqualToAnchor_constant(&root.bottomAnchor(), -16.0).setActive(true);
+    left.widthAnchor().constraintEqualToConstant(200.0).setActive(true);
+    right.leadingAnchor().constraintEqualToAnchor_constant(&left.trailingAnchor(), 24.0).setActive(true);
+    right.trailingAnchor().constraintEqualToAnchor_constant(&root.trailingAnchor(), -24.0).setActive(true);
+    right.topAnchor().constraintEqualToAnchor_constant(&root.topAnchor(), 20.0).setActive(true);
+    right.bottomAnchor().constraintLessThanOrEqualToAnchor_constant(&root.bottomAnchor(), -20.0).setActive(true);
+
+    ResourcesPane {
+        view: root,
         _handlers: h,
         account_ids: RefCell::new(Vec::new()),
         account,
-        kind,
+        _kinds: kinds,
+        kind_index: Cell::new(0),
+        title,
         status,
         resource_box,
         table_holder,
@@ -171,7 +210,15 @@ fn build() -> ResourcesWindow {
     }
 }
 
-impl ResourcesWindow {
+impl ResourcesPane {
+    /// Called when the section is shown again.
+    pub fn shown(&self) {
+        self.reload_accounts();
+        if self.items.borrow().is_empty() {
+            self.kind_changed();
+        }
+    }
+
     fn reload_accounts(&self) {
         let cfg = app().config.borrow().clone();
         let prev = self.account_ids.borrow().get(ui::selected(&self.account)).copied();
@@ -200,7 +247,7 @@ impl ResourcesWindow {
     }
 
     fn kind(&self) -> Option<&'static ResourceKind> {
-        RESOURCES.get(ui::selected(&self.kind))
+        RESOURCES.get(self.kind_index.get())
     }
 
     fn set_status(&self, s: &str) {
@@ -209,6 +256,7 @@ impl ResourcesWindow {
 
     fn kind_changed(&self) {
         let kind = self.kind();
+        self.title.setStringValue(&ns(kind.map(|k| k.title).unwrap_or(EXPLORER)));
         self.explorer_box.setHidden(kind.is_some());
         self.resource_box.setHidden(kind.is_none());
         let Some(kind) = kind else {
@@ -221,6 +269,7 @@ impl ResourcesWindow {
             last.1 = 160.0;
         }
         let table = Table::new(&cols);
+        table.set_full_width_style();
         table.on_select(|i| with(|w| w.select(i)));
         for v in self.table_holder.arrangedSubviews().iter() {
             v.removeFromSuperview();
@@ -252,7 +301,7 @@ impl ResourcesWindow {
         }
         for a in kind.actions {
             let action = *a;
-            let b = ui::button(a.label, &self.action_handlers, move || with(|w| w.run_action(action)));
+            let b = kit::glass_button(a.label, None, false, &self.action_handlers, move || with(|w| w.run_action(action)));
             b.setEnabled(editing_existing);
             self.actions_box.addArrangedSubview(&b);
         }
@@ -263,7 +312,7 @@ impl ResourcesWindow {
         &self,
         what: &str,
         fut: impl std::future::Future<Output = Result<T, shaft_api::ApiError>> + Send + 'static,
-        done: impl FnOnce(&ResourcesWindow, T) + Send + 'static,
+        done: impl FnOnce(&ResourcesPane, T) + Send + 'static,
     ) {
         if self.busy.replace(true) {
             return;
