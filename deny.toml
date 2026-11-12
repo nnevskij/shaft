@@ -1,0 +1,12 @@
+[advisories]
+ignore = [
+    # serde_yaml is unmaintained (not vulnerable); used for ngrok.yml interop.
+    "RUSTSEC-2024-0320",
+]
+
+[bans]
+multiple-versions = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -1,0 +1,34 @@
+[package]
+name = "shaft-app"
+description = "Shaft: a menu bar client for ngrok"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "shaft"
+path = "src/main.rs"
+
+[dependencies]
+shaft-config.workspace = true
+shaft-core.workspace = true
+shaft-inspector.workspace = true
+shaft-api.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+url.workspace = true
+bytes.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+libc = "0.2"
+global-hotkey = "0.10"
+objc2 = "0.6"
+block2 = "0.6"
+dispatch2 = "0.3"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+objc2-user-notifications = "0.3"
