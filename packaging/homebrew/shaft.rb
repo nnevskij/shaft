@@ -2,7 +2,7 @@
 # to a tap (e.g. nnevskij/homebrew-tap).
 cask "shaft" do
   version "0.2.1"
-  sha256 "efad317fbf06f328d8d82d3a2d41be225066e01019ac546f388e4ec750af0821"
+  sha256 "f357c2219c335e0fc93af55a599c65e5c5aa7f6b9ae7eeff32a9e5d862831183"
 
   url "https://github.com/nnevskij/shaft/releases/download/v#{version}/Shaft-#{version}.dmg"
   name "Shaft"
