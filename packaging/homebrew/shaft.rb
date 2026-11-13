@@ -9,7 +9,7 @@ cask "shaft" do
   desc "Menu bar client for ngrok"
   homepage "https://github.com/nnevskij/shaft"
 
-  depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
 
   app "Shaft.app"
 
