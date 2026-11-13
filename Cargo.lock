@@ -2027,7 +2027,7 @@ dependencies = [
 
 [[package]]
 name = "shaft-api"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "http-body-util",
@@ -2044,7 +2044,7 @@ dependencies = [
 
 [[package]]
 name = "shaft-app"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "block2",
@@ -2073,7 +2073,7 @@ dependencies = [
 
 [[package]]
 name = "shaft-config"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2092,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "shaft-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2116,7 +2116,7 @@ dependencies = [
 
 [[package]]
 name = "shaft-inspector"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "brotli",
