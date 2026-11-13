@@ -43,9 +43,11 @@ fn main() {
     let runtime =
         tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().thread_name("shaft-rt").build().expect("tokio runtime");
 
+    platform::set_process_name_if_unbundled();
     let ns_app = NSApplication::sharedApplication(mtm);
     ns_app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     platform::install_main_menu(mtm);
+    platform::observe_window_closes();
 
     let core = shaft_core::CoreHandle::start(runtime.handle().clone(), config.settings.clone(), app::event_sink());
     let first_run = config.accounts.is_empty();

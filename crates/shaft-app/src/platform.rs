@@ -6,8 +6,10 @@ use std::{collections::HashMap, fs::File, os::fd::AsRawFd, path::Path, str::From
 use block2::RcBlock;
 use global_hotkey::{hotkey::HotKey, GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use objc2::{rc::Retained, sel, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenu, NSMenuItem};
-use objc2_foundation::{NSBundle, NSDistributedNotificationCenter, NSNotification, NSString};
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationPolicy, NSEventModifierFlags, NSMenu, NSMenuItem, NSWindow, NSWindowWillCloseNotification,
+};
+use objc2_foundation::{NSBundle, NSDistributedNotificationCenter, NSNotification, NSNotificationCenter, NSString};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotificationRequest, UNNotificationSound, UNUserNotificationCenter,
 };
@@ -220,6 +222,69 @@ pub fn observe_activation_requests(lock: &InstanceLock) {
 }
 
 // ---------------------------------------------------------------------------
+// Dock presence: a regular app while a window is open, menu bar only otherwise
+// ---------------------------------------------------------------------------
+
+/// Show Shaft in the Dock and in the Cmd+Tab switcher (called when a window opens).
+pub fn enter_regular_mode() {
+    let app = NSApplication::sharedApplication(mtm());
+    if app.activationPolicy() != NSApplicationActivationPolicy::Regular {
+        app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+        // The Dock tile is created by the policy change, so set the icon after it.
+        crate::kit::set_dock_icon_if_unbundled();
+    }
+}
+
+/// Whether `w` is a real document-style window (not the popover, an alert or a panel).
+fn counts_as_app_window(w: &NSWindow) -> bool {
+    (w.isVisible() || w.isMiniaturized()) && w.canBecomeMainWindow()
+}
+
+/// Close every app window (the last close drops Shaft back to the menu bar).
+fn close_all_windows() {
+    let app = NSApplication::sharedApplication(mtm());
+    for w in app.windows().iter().filter(|w| counts_as_app_window(w)) {
+        w.close();
+    }
+}
+
+/// Without an .app bundle the process is named after the binary ("shaft");
+/// use the proper name in the menu bar and the Dock.
+pub fn set_process_name_if_unbundled() {
+    if NSBundle::mainBundle().bundleIdentifier().is_none() {
+        objc2_foundation::NSProcessInfo::processInfo().setProcessName(&ns("Shaft"));
+    }
+}
+
+/// Go back to a menu bar–only app once the last window is closed.
+pub fn observe_window_closes() {
+    let center = NSNotificationCenter::defaultCenter();
+    let block = RcBlock::new(|n: std::ptr::NonNull<NSNotification>| {
+        let n = unsafe { n.as_ref() };
+        let closing = n.object();
+        let app = NSApplication::sharedApplication(mtm());
+        if app.activationPolicy() != NSApplicationActivationPolicy::Regular {
+            return;
+        }
+        let closing_ptr = closing.as_deref().map(|o| o as *const _ as *const NSWindow);
+        let others_open = app.windows().iter().any(|w| Some(&*w as *const NSWindow) != closing_ptr && counts_as_app_window(&w));
+        if !others_open {
+            app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        }
+    });
+    let token = unsafe {
+        center.addObserverForName_object_queue_usingBlock(
+            Some(NSWindowWillCloseNotification),
+            None,
+            Some(&objc2_foundation::NSOperationQueue::mainQueue()),
+            &block,
+        )
+    };
+    // Observer lives for the whole process.
+    std::mem::forget(token);
+}
+
+// ---------------------------------------------------------------------------
 // Main menu (invisible for an agent app, but provides Edit shortcuts)
 // ---------------------------------------------------------------------------
 
@@ -237,7 +302,14 @@ pub fn install_main_menu(m: MainThreadMarker) {
 
     let app_item = NSMenuItem::new(m);
     let app_menu = NSMenu::initWithTitle(NSMenu::alloc(m), &NSString::from_str("Shaft"));
-    app_menu.addItem(&item("Quit Shaft", Some(sel!(terminate:)), "q", None));
+    // Cmd+Q only closes the windows: Shaft keeps running in the menu bar with
+    // its tunnels (quit for real from the popover).
+    let close_all = item("Close Shaft", Some(sel!(perform:)), "q", None);
+    let target = crate::ui::ActionTarget::new(close_all_windows);
+    unsafe { close_all.setTarget(Some(&target)) };
+    // AppKit holds menu targets weakly; this one lives for the whole process.
+    std::mem::forget(target);
+    app_menu.addItem(&close_all);
     app_item.setSubmenu(Some(&app_menu));
     main.addItem(&app_item);
 

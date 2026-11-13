@@ -343,6 +343,7 @@ pub fn set_window_content(w: &NSWindow, content: &NSView) {
 }
 
 pub fn show_window(w: &NSWindow) {
+    crate::platform::enter_regular_mode();
     let app = NSApplication::sharedApplication(mtm());
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);

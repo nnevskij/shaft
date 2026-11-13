@@ -398,6 +398,18 @@ pub fn rounded(field: &NSTextField) {
 /// bundle (e.g. `cargo run`).
 const APP_ICON_PNG: &[u8] = include_bytes!("../../../packaging/icon/AppIcon-256.png");
 
+/// Use the embedded icon for the Dock and Cmd+Tab when running the bare
+/// binary (a bundled app gets its icon from Info.plist).
+pub fn set_dock_icon_if_unbundled() {
+    if objc2_foundation::NSBundle::mainBundle().bundleIdentifier().is_some() {
+        return;
+    }
+    let data = objc2_foundation::NSData::with_bytes(APP_ICON_PNG);
+    if let Some(img) = NSImage::initWithData(<NSImage as objc2::AllocAnyThread>::alloc(), &data) {
+        unsafe { objc2_app_kit::NSApplication::sharedApplication(mtm()).setApplicationIconImage(Some(&img)) };
+    }
+}
+
 /// The app icon at `size` points (a symbol tile if the PNG cannot be decoded).
 pub fn app_icon(size: f64) -> Retained<NSView> {
     let data = objc2_foundation::NSData::with_bytes(APP_ICON_PNG);
