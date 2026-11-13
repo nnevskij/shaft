@@ -11,6 +11,7 @@ use crate::{
     app::app,
     kit,
     ui::{self, ns, Handlers},
+    updater,
 };
 
 const LOG_LEVELS: [&str; 5] = ["error", "warn", "info", "debug", "trace"];
@@ -33,6 +34,9 @@ pub struct SettingsPane {
     max_attempts: Retained<NSTextField>,
     heartbeat: Retained<NSTextField>,
     log_level: Retained<NSPopUpButton>,
+    auto_update: Retained<NSSwitch>,
+    update_status: Retained<NSTextField>,
+    check_now: Retained<objc2_app_kit::NSButton>,
     status: Retained<NSTextField>,
 }
 
@@ -50,6 +54,25 @@ fn with(f: impl FnOnce(&SettingsPane)) {
     let w = app().windows.settings.borrow().clone();
     if let Some(w) = w {
         f(&w);
+    }
+}
+
+/// Show the updater's latest state, if the pane exists.
+pub fn refresh_updates() {
+    with(|w| {
+        w.update_status.setStringValue(&ns(&updater::status()));
+        w.check_now.setEnabled(!updater::is_checking());
+    });
+}
+
+fn version_string() -> String {
+    let build = objc2_foundation::NSBundle::mainBundle()
+        .objectForInfoDictionaryKey(&ns("CFBundleVersion"))
+        .and_then(|v| v.downcast::<objc2_foundation::NSString>().ok())
+        .map(|s| s.to_string());
+    match build {
+        Some(b) => format!("Shaft {} ({b})", env!("CARGO_PKG_VERSION")),
+        None => format!("Shaft {}", env!("CARGO_PKG_VERSION")),
     }
 }
 
@@ -79,6 +102,7 @@ fn build() -> SettingsPane {
     let max_attempts = number_field(s.reconnect.max_attempts, "10");
     let heartbeat = number_field(s.reconnect.heartbeat().0, "10");
     let log_level = ui::popup(&LOG_LEVELS, LOG_LEVELS.iter().position(|l| *l == s.log_level).unwrap_or(2));
+    let auto_update = kit::switch(s.updates.check_automatically);
 
     let general = kit::section(
         Some("General"),
@@ -118,6 +142,19 @@ fn build() -> SettingsPane {
         ],
         None,
     );
+    let check_now = kit::glass_button("Check Now", Some("arrow.clockwise"), false, &h, || updater::check(updater::Trigger::Manual));
+    check_now.setEnabled(!updater::is_checking());
+    let version = ui::label(&version_string());
+    let update_status = ui::secondary_label(&updater::status());
+    let version_texts = ui::vstack(&[&version, &update_status], 2.0);
+    let updates = kit::section(
+        Some("Software Update"),
+        &[
+            kit::row_detail("Check for updates automatically", "At launch and once a day, from GitHub releases", &auto_update),
+            ui::v(&*ui::hstack(&[&version_texts, &ui::spacer(), &check_now], 8.0)),
+        ],
+        Some("Shaft only tells you about new versions; it never installs anything on its own."),
+    );
     let open_logs = kit::glass_button("Show Logs", Some("doc.text.magnifyingglass"), false, &h, || ui::reveal_in_finder(&log_dir()));
     let open_config =
         kit::glass_button("Show Config", Some("folder"), false, &h, || ui::reveal_in_finder(&app_support_dir().join("config.toml")));
@@ -134,8 +171,8 @@ fn build() -> SettingsPane {
     save.setKeyEquivalentModifierMask(objc2_app_kit::NSEventModifierFlags::Command);
     let buttons = ui::hstack(&[&status, &ui::spacer(), &save], 8.0);
 
-    let content = ui::vstack(&[&general, &notifications, &shortcuts, &inspector, &connection, &troubleshooting, &buttons], 28.0);
-    for v in [&*general as &NSView, &notifications, &shortcuts, &inspector, &connection, &troubleshooting, &buttons] {
+    let content = ui::vstack(&[&general, &notifications, &shortcuts, &inspector, &connection, &updates, &troubleshooting, &buttons], 28.0);
+    for v in [&*general as &NSView, &notifications, &shortcuts, &inspector, &connection, &updates, &troubleshooting, &buttons] {
         ui::fill_width(&content, v);
     }
     ui::pad(&content, 20.0, 28.0);
@@ -171,6 +208,9 @@ fn build() -> SettingsPane {
         max_attempts,
         heartbeat,
         log_level,
+        auto_update,
+        update_status,
+        check_now,
         status,
     }
 }
@@ -222,6 +262,7 @@ impl SettingsPane {
             s.reconnect.max_attempts = attempts as u32;
             s.reconnect.heartbeat_interval_secs = hb;
             s.reconnect.heartbeat_tolerance_secs = hb + 5;
+            s.updates.check_automatically = kit::is_on(&self.auto_update);
             s.log_level = LOG_LEVELS[ui::selected(&self.log_level).min(LOG_LEVELS.len() - 1)].into();
         }
         if !app.save() {

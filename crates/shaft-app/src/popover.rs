@@ -36,11 +36,12 @@ fn signature(app: &App) -> String {
     let mut failures: Vec<_> = app.failures.borrow().iter().map(|(k, v)| (*k, v.clone())).collect();
     failures.sort_by_key(|(k, _)| *k);
     format!(
-        "{accounts:?}|{:?}|{profiles:?}|{:?}|{failures:?}|{:?}|{:?}",
+        "{accounts:?}|{:?}|{profiles:?}|{:?}|{failures:?}|{:?}|{:?}|{:?}",
         cfg.active_account().map(|a| a.id),
         app.core.snapshots(),
         app.quick_error.borrow(),
         app.quick.borrow().protocol,
+        app.update.borrow().as_ref().map(|r| r.version.to_string()),
     )
 }
 
@@ -132,7 +133,7 @@ fn section_title(text: &str) -> Retained<NSView> {
 }
 
 fn header(subtitle: &str, trailing: Option<&NSView>) -> Retained<NSView> {
-    let tile = kit::icon_tile("arrow.up.and.down", &NSColor::systemIndigoColor(), 30.0);
+    let tile = kit::app_icon(34.0);
     let title = ui::label("Shaft");
     title.setFont(Some(&NSFont::systemFontOfSize_weight(14.0, weight::SEMIBOLD)));
     let sub = ui::secondary_label(subtitle);
@@ -229,6 +230,10 @@ fn main_view(a: &Rc<App>, h: &Handlers) -> Retained<NSStackView> {
     };
     views.push(header(&subtitle, (cfg.accounts.len() > 1).then_some(&**account_popup)));
 
+    if let Some(rel) = a.update.borrow().clone() {
+        views.push(update_module(&rel, h));
+    }
+
     // Quick tunnel module.
     views.push(quick_module(a, h));
 
@@ -256,6 +261,34 @@ fn main_view(a: &Rc<App>, h: &Handlers) -> Retained<NSStackView> {
     views.push(ui::v(&*footer));
 
     column(&views, 12.0)
+}
+
+fn update_module(rel: &crate::updater::Release, h: &Handlers) -> Retained<NSView> {
+    let icon = kit::symbol_view("arrow.down.circle.fill", 20.0, Some(&NSColor::systemBlueColor()));
+    let title = ui::label(&format!("Shaft {} is available", rel.version));
+    title.setFont(Some(&NSFont::systemFontOfSize_weight(13.0, weight::SEMIBOLD)));
+    ui::resist_compression(&title);
+    let notes = {
+        let r = rel.clone();
+        ui::link_button("What’s New", h, move || ui::open_url(&r.page_url))
+    };
+    notes.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+    let skip = {
+        let r = rel.clone();
+        ui::link_button("Skip This Version", h, move || crate::updater::skip(&r))
+    };
+    skip.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+    let texts = ui::vstack(&[&title, &ui::hstack(&[&notes, &skip], 10.0)], 2.0);
+    let download = {
+        let r = rel.clone();
+        kit::glass_button("Download", None, true, h, move || {
+            app().close_popover();
+            crate::updater::download(&r);
+        })
+    };
+    download.setControlSize(objc2_app_kit::NSControlSize::Small);
+    let row = ui::fill_hstack(&[&icon, &texts, &ui::spacer(), &download], 10.0);
+    ui::v(&*kit::card_padded(&row, 10.0, kit::space::CARD_H))
 }
 
 fn quick_module(a: &Rc<App>, h: &Handlers) -> Retained<NSView> {

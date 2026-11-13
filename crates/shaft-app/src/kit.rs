@@ -393,3 +393,20 @@ pub fn pane_title(text: &str) -> Retained<NSTextField> {
 pub fn rounded(field: &NSTextField) {
     field.setBezelStyle(objc2_app_kit::NSTextFieldBezelStyle::RoundedBezel);
 }
+
+/// The app icon at `size` points when running from the .app bundle, or a
+/// symbol tile fallback (e.g. `cargo run`, where there is no bundle icon).
+pub fn app_icon(size: f64) -> Retained<NSView> {
+    let bundled = objc2_foundation::NSBundle::mainBundle().pathForResource_ofType(Some(&ns("AppIcon")), Some(&ns("icns"))).is_some();
+    if bundled {
+        let img = objc2_app_kit::NSApplication::sharedApplication(mtm()).applicationIconImage();
+        if let Some(img) = img {
+            let v = NSImageView::imageViewWithImage(&img, mtm());
+            v.setImageScaling(objc2_app_kit::NSImageScaling::ScaleProportionallyUpOrDown);
+            ui::set_width(&v, size);
+            ui::set_height(&v, size);
+            return ui::v(&*v);
+        }
+    }
+    ui::v(&*icon_tile("arrow.up.and.down", &NSColor::systemIndigoColor(), size * 0.88))
+}

@@ -6,6 +6,7 @@ mod logging;
 mod platform;
 mod popover;
 mod ui;
+mod updater;
 mod windows;
 
 use std::sync::Arc;
@@ -49,6 +50,7 @@ fn main() {
     let first_run = config.accounts.is_empty();
     let app = app::App::install(core, store, config);
     platform::observe_activation_requests(&lock);
+    updater::start();
 
     if let Some(err) = load_error {
         // Do not overwrite a config we could not read.
@@ -77,6 +79,7 @@ fn main() {
                     "resources" => windows::resources::open(),
                     "settings" => windows::settings::open(),
                     "diagnostics" => windows::diagnostics::open(),
+                    "check-updates" => updater::check(updater::Trigger::Manual),
                     "start-all" => {
                         let ids: Vec<_> = app::app().config.borrow().profiles.iter().map(|p| p.id).collect();
                         for id in ids {

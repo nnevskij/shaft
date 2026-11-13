@@ -455,6 +455,16 @@ pub fn error(message: &str, info: &str) {
     run_alert(&alert_base(message, info, NSAlertStyle::Critical));
 }
 
+/// Show an alert with `buttons` (first = default) and return the index of
+/// the one pressed.
+pub fn choose(message: &str, info: &str, buttons: &[&str]) -> usize {
+    let a = alert_base(message, info, NSAlertStyle::Informational);
+    for b in buttons {
+        a.addButtonWithTitle(&ns(b));
+    }
+    (run_alert(&a) - NSAlertFirstButtonReturn).max(0) as usize
+}
+
 /// Returns true when the user confirms.
 pub fn confirm(message: &str, info: &str, confirm_title: &str, destructive: bool) -> bool {
     let a = alert_base(message, info, if destructive { NSAlertStyle::Critical } else { NSAlertStyle::Warning });

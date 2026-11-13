@@ -36,7 +36,7 @@ pub fn app() -> Rc<App> {
     APP.with(|a| a.get().expect("app not initialised").clone())
 }
 
-fn try_app() -> Option<Rc<App>> {
+pub fn try_app() -> Option<Rc<App>> {
     APP.with(|a| a.get().cloned())
 }
 
@@ -72,6 +72,8 @@ pub struct App {
     hotkeys: RefCell<Option<Hotkeys>>,
     popover_monitors: RefCell<Vec<Retained<objc2::runtime::AnyObject>>>,
     pub hotkey_problems: RefCell<Vec<String>>,
+    /// A newer release found by the updater, shown in the popover.
+    pub update: RefCell<Option<crate::updater::Release>>,
 }
 
 impl App {
@@ -106,6 +108,7 @@ impl App {
             hotkeys: RefCell::new(None),
             popover_monitors: RefCell::new(Vec::new()),
             hotkey_problems: RefCell::new(Vec::new()),
+            update: RefCell::new(None),
         });
         APP.with(|a| {
             let _ = a.set(app.clone());

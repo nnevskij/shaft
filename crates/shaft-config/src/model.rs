@@ -86,6 +86,7 @@ pub struct Settings {
     pub hotkeys: HotkeySettings,
     pub inspector: InspectorSettings,
     pub reconnect: ReconnectSettings,
+    pub updates: UpdateSettings,
     /// `tracing` filter directive, e.g. `info` or `shaft_core=debug`.
     pub log_level: String,
     pub active_account: Option<Uuid>,
@@ -99,9 +100,25 @@ impl Default for Settings {
             hotkeys: HotkeySettings::default(),
             inspector: InspectorSettings::default(),
             reconnect: ReconnectSettings::default(),
+            updates: UpdateSettings::default(),
             log_level: "info".into(),
             active_account: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct UpdateSettings {
+    /// Look for a newer release at launch and once a day.
+    pub check_automatically: bool,
+    /// A version the user chose to skip: not offered again automatically.
+    pub skipped_version: Option<String>,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self { check_automatically: true, skipped_version: None }
     }
 }
 

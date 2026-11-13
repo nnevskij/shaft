@@ -16,6 +16,7 @@ Shaft lives only in the menu bar: start and stop tunnels, copy their URLs, inspe
 - **ngrok.yml** — import v2/v3 agent configs, export profiles as v3 (options without a v3 field are translated to Traffic Policy rules).
 - **Resources** — list/create/edit/delete reserved domains, TCP addresses, cloud endpoints, agents (restart/update/stop), authtokens, API keys, SSH keys, IP policies & rules, IP restrictions, TLS certificates, event subscriptions/destinations, plus a generic API explorer for everything else.
 - **Diagnostics** — DNS/TCP/TLS checks to the ngrok edge and authtoken/API key validation, with a shareable report.
+- **Updates** — checks GitHub Releases at launch and daily, and offers new versions from the menu bar (can be turned off).
 - **Resilience** — automatic reconnection after sleep or network changes, upstream reachability probe, notifications on state changes.
 
 No ngrok binary is required: tunnels run in-process through the official [ngrok-rust SDK](https://github.com/ngrok/ngrok-rust); account resources use the [ngrok API](https://ngrok.com/docs/api/).
@@ -41,7 +42,7 @@ scripts/bundle.sh
 open dist/Shaft.app
 ```
 
-`UNIVERSAL=1`, `SIGN_IDENTITY="Developer ID Application: …"`, `DMG=1` and `NOTARY_PROFILE=…` produce a signed, notarized universal DMG.
+`UNIVERSAL=1`, `SIGN_IDENTITY="Developer ID Application: …"`, `DMG=1` and `NOTARY_PROFILE=…` produce a signed, notarized universal DMG. Releases are cut with `scripts/release.sh` and published by CI; see [docs/RELEASING.md](docs/RELEASING.md).
 
 ### Development switches
 
@@ -52,6 +53,7 @@ open dist/Shaft.app
 | `SHAFT_LOG=debug` | Log level (logs: `~/Library/Logs/dev.shaft.app`) |
 | `SHAFT_DEBUG_OPEN=popover,inspector,…` | Open UI at launch |
 | `SHAFT_SNAPSHOT_DIR=/tmp/snaps` | Render shown views to PNG (no screen recording needed) |
+| `SHAFT_UPDATE_URL=http://…` | Read releases from another feed (GitHub release JSON); also enables update checks outside the bundle |
 | `SHAFT_NO_GLASS=1` | Use pre-macOS 26 button styles (also needed for snapshots: they cannot capture glass) |
 
 ## Tests
