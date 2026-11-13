@@ -1,7 +1,14 @@
 [advisories]
+# Only "unmaintained" notices are ignored here, never vulnerabilities.
 ignore = [
-    # serde_yaml is unmaintained (not vulnerable); used for ngrok.yml interop.
-    "RUSTSEC-2024-0320",
+    # unsafe-libyaml (via serde_yaml, itself deprecated) is unmaintained, not
+    # vulnerable; used only to read/write the user's own ngrok.yml.
+    "RUSTSEC-2024-0449",
+    # generational-arena (via ngrok -> muxado -> awaitdrop) is unmaintained;
+    # pulled in by the official ngrok SDK, no alternative.
+    "RUSTSEC-2024-0014",
+    # rustls-pemfile (via ngrok) is unmaintained; pulled in by the ngrok SDK.
+    "RUSTSEC-2025-0134",
 ]
 
 [bans]

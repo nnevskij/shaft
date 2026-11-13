@@ -23,13 +23,19 @@ jobs:
       - name: Online tunnel test
         if: env.SHAFT_E2E_AUTHTOKEN != ''
         run: cargo test -p shaft-core --test manager -- --ignored
+
+  # cargo-deny-action is a container action, which only runs on Linux runners.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans sources
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: check
+    needs: [check, deny]
     runs-on: macos-latest
     permissions:
       contents: write
