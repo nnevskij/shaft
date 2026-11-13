@@ -5,6 +5,7 @@ mod kit;
 mod logging;
 mod platform;
 mod popover;
+mod status_icon;
 mod ui;
 mod updater;
 mod windows;
@@ -79,6 +80,7 @@ fn main() {
                     "resources" => windows::resources::open(),
                     "settings" => windows::settings::open(),
                     "diagnostics" => windows::diagnostics::open(),
+                    "status-icons" => status_icon::debug_snapshots(),
                     "check-updates" => updater::check(updater::Trigger::Manual),
                     "start-all" => {
                         let ids: Vec<_> = app::app().config.borrow().profiles.iter().map(|p| p.id).collect();

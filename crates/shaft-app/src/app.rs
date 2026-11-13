@@ -23,6 +23,7 @@ use uuid::Uuid;
 use crate::{
     platform::{on_main, HotkeyAction, Hotkeys, Notifier},
     popover,
+    status_icon::{self, IconState},
     ui::{self, mtm, ns, Handlers},
     windows::Windows,
 };
@@ -314,26 +315,29 @@ impl App {
         let online = snaps.iter().filter(|s| s.state.is_online()).count();
         let failed = snaps.iter().any(|s| matches!(s.state, TunnelState::Failed(_)));
         let busy = snaps.iter().any(|s| matches!(s.state, TunnelState::Starting | TunnelState::Reconnecting { .. }));
-        let (symbol, desc) = if failed {
-            ("exclamationmark.triangle", "Shaft — error")
+        let state = if failed {
+            IconState::Error
         } else if busy {
-            ("arrow.triangle.2.circlepath", "Shaft — connecting")
+            IconState::Connecting
         } else if online > 0 {
-            ("arrow.up.and.down.circle.fill", "Shaft — online")
+            IconState::Online
         } else {
-            ("arrow.up.and.down.circle", "Shaft")
+            IconState::Idle
         };
         let Some(button) = self.status_item.button(mtm()) else { return };
-        if let Some(img) = objc2_app_kit::NSImage::imageWithSystemSymbolName_accessibilityDescription(&ns(symbol), Some(&ns(desc))) {
-            img.setTemplate(true);
-            button.setImage(Some(&img));
-        }
-        // Changing the title changes the item's width, which would move an
-        // open popover anchored to it: defer until the popover closes.
-        if !self.popover.isShown() {
-            let title = if online > 0 { format!(" {online}") } else { String::new() };
-            if button.title().to_string() != title {
-                button.setTitle(&ns(&title));
+        button.setImage(Some(&status_icon::image(state)));
+        let title = if online > 0 { format!(" {online}") } else { String::new() };
+        if button.title().to_string() != title {
+            button.setTitle(&ns(&title));
+            // The new title changes the item's width; once the status bar has
+            // laid it out again, re-anchor an open popover to the button.
+            if self.popover.isShown() {
+                on_main(|| {
+                    let Some(app) = try_app() else { return };
+                    if let (true, Some(button)) = (app.popover.isShown(), app.status_item.button(mtm())) {
+                        app.popover.setPositioningRect(button.bounds());
+                    }
+                });
             }
         }
         button.setToolTip(Some(&ns(&tooltip(&snaps))));
@@ -358,16 +362,6 @@ impl App {
         self.remove_popover_monitors();
         if self.popover.isShown() {
             unsafe { self.popover.performClose(None) };
-            // Apply the status title deferred while the popover was open,
-            // once the close animation has finished.
-            std::thread::spawn(|| {
-                std::thread::sleep(Duration::from_millis(350));
-                on_main(|| {
-                    if let Some(app) = try_app() {
-                        app.update_icon();
-                    }
-                });
-            });
         }
     }
 

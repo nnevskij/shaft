@@ -394,19 +394,19 @@ pub fn rounded(field: &NSTextField) {
     field.setBezelStyle(objc2_app_kit::NSTextFieldBezelStyle::RoundedBezel);
 }
 
-/// The app icon at `size` points when running from the .app bundle, or a
-/// symbol tile fallback (e.g. `cargo run`, where there is no bundle icon).
+/// The app icon, embedded in the binary so it also shows without the .app
+/// bundle (e.g. `cargo run`).
+const APP_ICON_PNG: &[u8] = include_bytes!("../../../packaging/icon/AppIcon-256.png");
+
+/// The app icon at `size` points (a symbol tile if the PNG cannot be decoded).
 pub fn app_icon(size: f64) -> Retained<NSView> {
-    let bundled = objc2_foundation::NSBundle::mainBundle().pathForResource_ofType(Some(&ns("AppIcon")), Some(&ns("icns"))).is_some();
-    if bundled {
-        let img = objc2_app_kit::NSApplication::sharedApplication(mtm()).applicationIconImage();
-        if let Some(img) = img {
-            let v = NSImageView::imageViewWithImage(&img, mtm());
-            v.setImageScaling(objc2_app_kit::NSImageScaling::ScaleProportionallyUpOrDown);
-            ui::set_width(&v, size);
-            ui::set_height(&v, size);
-            return ui::v(&*v);
-        }
+    let data = objc2_foundation::NSData::with_bytes(APP_ICON_PNG);
+    if let Some(img) = NSImage::initWithData(<NSImage as objc2::AllocAnyThread>::alloc(), &data) {
+        let v = NSImageView::imageViewWithImage(&img, mtm());
+        v.setImageScaling(objc2_app_kit::NSImageScaling::ScaleProportionallyUpOrDown);
+        ui::set_width(&v, size);
+        ui::set_height(&v, size);
+        return ui::v(&*v);
     }
     ui::v(&*icon_tile("arrow.up.and.down", &NSColor::systemIndigoColor(), size * 0.88))
 }
