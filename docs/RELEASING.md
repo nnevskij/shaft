@@ -2,8 +2,8 @@
 
 Shaft ships outside the Mac App Store as a **Developer ID–signed, notarized DMG**
 on GitHub Releases (plus an optional Homebrew cask). The app finds new versions
-by asking GitHub for the latest published release. It does not install them
-itself; the user downloads the new DMG or runs `brew upgrade`.
+by asking GitHub for the latest published release and, when the user clicks
+**Update**, installs it and relaunches (see below).
 
 Why not the Mac App Store: it requires the App Sandbox, and it forbids
 in-app update checks that point outside the store. Shaft opens arbitrary local
@@ -113,10 +113,40 @@ xcrun stapler validate dist/Shaft-*.dmg
   hourly so a Mac that slept still checks on wake. You can turn it off in
   Settings → Software Update, which also has **Check Now**.
 - When a newer version exists, the user gets a notification (once per version
-  per run) and a banner in the menu bar popover with **Download** (the DMG
-  asset, else the release page), **What's New** and **Skip This Version**.
-  Skipped versions are not offered again automatically, but manual checks
-  still show them.
+  per run) and a banner in the menu bar popover with **Update**, **What's
+  New** and **Skip This Version**. Skipped versions are not offered again
+  automatically, but manual checks still show them.
+
+## How in-app updates are installed
+
+**Update** (or **Install and Relaunch** in the alert):
+
+1. downloads the release's DMG to `~/Library/Caches/dev.shaft.app/updates`
+   and checks it against the release's `.dmg.sha256` asset,
+2. mounts the DMG and copies `Shaft.app` next to the running bundle as
+   `.Shaft-update.app`,
+3. accepts the copy only if `codesign --verify --deep --strict` passes, it is
+   signed by the **same Team ID** as the running app, has the same bundle ID
+   and the expected version, and Gatekeeper accepts it (notarized),
+4. starts a small helper and quits Shaft, stopping active tunnels after
+   asking. The helper swaps the bundles once Shaft has exited and reopens it.
+   If the swap fails it restores the old bundle, so Shaft always comes back.
+   The helper's output goes to `~/Library/Logs/dev.shaft.app/update.log`.
+
+So every release must keep the DMG and `.sha256` assets with these names, and
+must be signed with the same Developer ID team. Changing teams breaks in-app
+updates for existing installs, which then have to update manually once.
+
+Shaft falls back to opening the download when it cannot replace itself: an
+unsigned or ad-hoc build, a copy run from the DMG or a quarantined location, or
+an `/Applications` folder the user cannot write to.
+
+The cask declares `auto_updates true`, so `brew upgrade` leaves Shaft to its own
+updater (`brew upgrade --greedy` still upgrades it).
+
+To test the flow with local builds, a **debug** build accepts a staged app that
+is not notarized when `SHAFT_UPDATE_SKIP_NOTARIZATION=1` is set. Release builds
+ignore it.
 - Automatic checks only run from the `.app` bundle. To test against a mock feed:
 
   ```bash

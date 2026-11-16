@@ -48,7 +48,7 @@ The ngrok CLI is great, but day-to-day it means a terminal tab per tunnel, copyi
 | 🗂️ **Resources** | List/create/edit/delete reserved domains, TCP addresses, cloud endpoints, agents (restart/update/stop), authtokens, API keys, SSH keys, IP policies & rules, IP restrictions, TLS certificates, event subscriptions/destinations — plus a generic API explorer for everything else. |
 | 🩺 **Diagnostics** | DNS/TCP/TLS checks to the ngrok edge and authtoken/API key validation, with a shareable report. |
 | 🔄 **Resilience** | Automatic reconnection after sleep or network changes, upstream reachability probe, notifications on state changes. |
-| ⬆️ **Updates** | Checks GitHub Releases at launch and daily and offers new versions from the menu bar (can be turned off). |
+| ⬆️ **Updates** | Checks GitHub Releases at launch and daily; one click downloads, verifies and installs the new version, then relaunches Shaft. |
 
 ## Installation
 

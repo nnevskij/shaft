@@ -1,13 +1,18 @@
 //! Update detection. Shaft asks GitHub for the latest published release at
 //! launch and then once a day, and offers it when it is newer than the running
 //! build: a notification, a banner in the popover and an alert on manual
-//! checks. Installing stays with the user (signed, notarized DMG or Homebrew):
-//! Shaft never replaces its own bundle.
+//! checks. "Install and Relaunch" downloads and verifies the DMG, replaces the
+//! bundle and restarts Shaft (see [`crate::installer`]); when Shaft cannot
+//! replace itself (no write access, unsigned build…) it opens the download.
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     cmp::Ordering,
     fmt,
+    sync::{
+        atomic::{AtomicU8, Ordering as AtomicOrdering},
+        Arc,
+    },
     time::{Duration, SystemTime},
 };
 
@@ -15,6 +20,7 @@ use serde::Deserialize;
 
 use crate::{
     app::{app, try_app},
+    installer,
     platform::on_main,
     ui,
 };
@@ -126,6 +132,8 @@ pub struct Release {
     pub page_url: String,
     /// Direct link to the DMG, when the release has one.
     pub download_url: Option<String>,
+    /// The DMG's `.sha256` file, when published.
+    pub checksum_url: Option<String>,
     pub notes: String,
 }
 
@@ -156,8 +164,10 @@ pub fn parse_release(json: &str) -> Result<Release, String> {
         return Err("the latest release is not a final release".into());
     }
     let version = Version::parse(&r.tag_name).ok_or_else(|| format!("release tag `{}` is not a version", r.tag_name))?;
-    let download_url = r.assets.iter().find(|a| a.name.to_ascii_lowercase().ends_with(".dmg")).map(|a| a.browser_download_url.clone());
-    Ok(Release { version, page_url: r.html_url, download_url, notes: r.body.unwrap_or_default().trim().to_string() })
+    let asset =
+        |suffix: &str| r.assets.iter().find(|a| a.name.to_ascii_lowercase().ends_with(suffix)).map(|a| a.browser_download_url.clone());
+    let (download_url, checksum_url) = (asset(".dmg"), asset(".dmg.sha256"));
+    Ok(Release { version, page_url: r.html_url, download_url, checksum_url, notes: r.body.unwrap_or_default().trim().to_string() })
 }
 
 fn feed_url() -> String {
@@ -197,6 +207,9 @@ pub enum Trigger {
     Automatic,
     /// From the UI: always reports the outcome.
     Manual,
+    /// Development aid (`SHAFT_DEBUG_OPEN=update-now`): install whatever is
+    /// newer without asking.
+    InstallNow,
 }
 
 thread_local! {
@@ -283,10 +296,11 @@ fn finish(trigger: Trigger, result: Result<Release, String>) {
             set_outcome(outcome);
             match trigger {
                 Trigger::Manual => prompt(&rel),
+                Trigger::InstallNow => install(&rel),
                 Trigger::Automatic => {
                     let first = NOTIFIED.with(|n| n.replace(Some(rel.version.clone())).as_ref() != Some(&rel.version));
                     if first {
-                        app.notifier.notify(&format!("Shaft {} is available", rel.version), "Open Shaft from the menu bar to download it.");
+                        app.notifier.notify(&format!("Shaft {} is available", rel.version), "Open Shaft from the menu bar to update.");
                     }
                 }
             }
@@ -326,7 +340,7 @@ fn clock() -> String {
     format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
 }
 
-/// Ask what to do with `rel`: download, skip this version, or decide later.
+/// Ask what to do with `rel`: install it, skip this version, or decide later.
 pub fn prompt(rel: &Release) {
     let mut info = format!("You have version {}.", Version::current());
     if !rel.notes.is_empty() {
@@ -336,9 +350,9 @@ pub fn prompt(rel: &Release) {
         }
         info.push_str(&format!("\n\n{notes}"));
     }
-    info.push_str("\n\nInstalled with Homebrew? Run `brew upgrade --cask shaft` instead.");
-    match ui::choose(&format!("Shaft {} is available", rel.version), &info, &["Download", "Skip This Version", "Later"]) {
-        0 => download(rel),
+    let primary = if self_update_blocker().is_none() { "Install and Relaunch" } else { "Download" };
+    match ui::choose(&format!("Shaft {} is available", rel.version), &info, &[primary, "Skip This Version", "Later"]) {
+        0 => install(rel),
         1 => skip(rel),
         _ => {}
     }
@@ -347,6 +361,139 @@ pub fn prompt(rel: &Release) {
 /// Open the DMG download (or the release page) in the browser.
 pub fn download(rel: &Release) {
     ui::open_url(rel.download_url.as_deref().unwrap_or(&rel.page_url));
+}
+
+// ---------------------------------------------------------------------------
+// Installing (main thread)
+// ---------------------------------------------------------------------------
+
+/// Progress of an in-app update, shown in the popover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Install {
+    Idle,
+    /// Percent downloaded, when the size is known.
+    Downloading(Option<u8>),
+    /// Verifying and staging the new bundle.
+    Installing,
+}
+
+thread_local! {
+    static INSTALL: Cell<Install> = const { Cell::new(Install::Idle) };
+    /// Why this copy cannot update itself (`None` = it can), computed once.
+    static BLOCKER: OnceCell<Option<String>> = const { OnceCell::new() };
+}
+
+pub fn install_state() -> Install {
+    INSTALL.with(|s| s.get())
+}
+
+fn set_install_state(state: Install) {
+    if INSTALL.with(|s| s.replace(state)) != state {
+        if let Some(app) = try_app() {
+            app.schedule_render();
+        }
+    }
+}
+
+/// Why Shaft cannot replace itself here, if it cannot.
+pub fn self_update_blocker() -> Option<String> {
+    BLOCKER.with(|b| b.get_or_init(|| installer::target().err()).clone())
+}
+
+/// Download, verify and install `rel`, then quit; the helper relaunches Shaft.
+pub fn install(rel: &Release) {
+    if install_state() != Install::Idle {
+        return;
+    }
+    let target = match installer::target() {
+        Ok(t) => t,
+        Err(why) => {
+            tracing::info!(reason = %why, "self-update not possible, opening the download");
+            if ui::choose("Shaft can't update itself", &format!("{why}\n\nDownload the new version instead?"), &["Download", "Cancel"]) == 0
+            {
+                download(rel);
+            }
+            return;
+        }
+    };
+    let Some(url) = rel.download_url.clone() else {
+        download(rel);
+        return;
+    };
+    let app = app();
+    let active = app.core.snapshots().len();
+    if active > 0 {
+        let tunnels = if active == 1 { "1 active tunnel".to_string() } else { format!("{active} active tunnels") };
+        let ok = ui::confirm(
+            &format!("Install Shaft {} and relaunch?", rel.version),
+            &format!("Shaft will quit while it updates: {tunnels} will stop and won't restart on their own."),
+            "Install and Relaunch",
+            false,
+        );
+        if !ok {
+            return;
+        }
+    }
+
+    tracing::info!(version = %rel.version, url, "installing update");
+    set_install_state(Install::Downloading(None));
+    let version = rel.version.to_string();
+    let checksum_url = rel.checksum_url.clone();
+    let rel_c = rel.clone();
+    app.core.runtime().spawn(async move {
+        let result = async {
+            let dir = installer::work_dir()?;
+            let dmg = dir.join(format!("Shaft-{version}.dmg"));
+            let last = Arc::new(AtomicU8::new(u8::MAX));
+            installer::download(&url, &dmg, |received, total| {
+                let pct = total.filter(|t| *t > 0).map(|t| (received * 100 / t).min(100) as u8);
+                // Hop to the main thread only when the shown value changes.
+                if last.swap(pct.unwrap_or(u8::MAX - 1), AtomicOrdering::Relaxed) != pct.unwrap_or(u8::MAX - 1) {
+                    on_main(move || set_install_state(Install::Downloading(pct)));
+                }
+            })
+            .await?;
+            let sha = match &checksum_url {
+                Some(u) => Some(installer::fetch_checksum(u).await?),
+                None => None,
+            };
+            on_main(|| set_install_state(Install::Installing));
+            let staged =
+                tokio::task::spawn_blocking(move || installer::stage(&target, &dmg, &version, sha.as_deref()).map(|s| (target, s)))
+                    .await
+                    .map_err(|e| e.to_string())??;
+            Ok::<_, String>(staged)
+        }
+        .await;
+        on_main(move || finish_install(&rel_c, result));
+    });
+}
+
+fn finish_install(rel: &Release, result: Result<(installer::Target, std::path::PathBuf), String>) {
+    let spawned = result.and_then(|(target, staged)| {
+        let log = shaft_config::log_dir().join("update.log");
+        installer::spawn_swap(&target, &staged, &log).inspect_err(|_| {
+            let _ = std::fs::remove_dir_all(&staged);
+        })
+    });
+    match spawned {
+        Ok(()) => {
+            tracing::info!(version = %rel.version, "update staged; quitting to relaunch");
+            app().quit();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "update failed");
+            set_install_state(Install::Idle);
+            if ui::choose(
+                "Shaft could not be updated",
+                &format!("{e}\n\nYou can download and install it manually."),
+                &["Download", "Cancel"],
+            ) == 0
+            {
+                download(rel);
+            }
+        }
+    }
 }
 
 pub fn skip(rel: &Release) {
@@ -408,6 +555,7 @@ mod tests {
         let r = parse_release(json).unwrap();
         assert_eq!(r.version, v("0.3.1"));
         assert_eq!(r.download_url.as_deref(), Some("https://x/dmg"));
+        assert_eq!(r.checksum_url.as_deref(), Some("https://x/sha"));
         assert_eq!(r.notes, "Fixes.");
 
         let no_assets = r#"{"tag_name": "v1.0.0", "html_url": "https://x/page"}"#;

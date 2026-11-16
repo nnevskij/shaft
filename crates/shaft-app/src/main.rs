@@ -1,6 +1,7 @@
 //! Shaft — a menu bar client for ngrok.
 
 mod app;
+mod installer;
 mod kit;
 mod logging;
 mod platform;
@@ -84,6 +85,7 @@ fn main() {
                     "diagnostics" => windows::diagnostics::open(),
                     "status-icons" => status_icon::debug_snapshots(),
                     "check-updates" => updater::check(updater::Trigger::Manual),
+                    "update-now" => updater::check(updater::Trigger::InstallNow),
                     "start-all" => {
                         let ids: Vec<_> = app::app().config.borrow().profiles.iter().map(|p| p.id).collect();
                         for id in ids {

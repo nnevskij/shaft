@@ -153,7 +153,7 @@ fn build() -> SettingsPane {
             kit::row_detail("Check for updates automatically", "At launch and once a day, from GitHub releases", &auto_update),
             ui::v(&*ui::hstack(&[&version_texts, &ui::spacer(), &check_now], 8.0)),
         ],
-        Some("Shaft only tells you about new versions; it never installs anything on its own."),
+        Some("Updates are installed only when you choose Update. Each one is checked against Shaft's Developer ID signature and Apple notarization before it replaces this copy."),
     );
     let open_logs = kit::glass_button("Show Logs", Some("doc.text.magnifyingglass"), false, &h, || ui::reveal_in_finder(&log_dir()));
     let open_config =

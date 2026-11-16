@@ -41,7 +41,7 @@ fn signature(app: &App) -> String {
         app.core.snapshots(),
         app.quick_error.borrow(),
         app.quick.borrow().protocol,
-        app.update.borrow().as_ref().map(|r| r.version.to_string()),
+        (app.update.borrow().as_ref().map(|r| r.version.to_string()), crate::updater::install_state()),
     )
 }
 
@@ -278,16 +278,27 @@ fn update_module(rel: &crate::updater::Release, h: &Handlers) -> Retained<NSView
         ui::link_button("Skip This Version", h, move || crate::updater::skip(&r))
     };
     skip.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-    let texts = ui::vstack(&[&title, &ui::hstack(&[&notes, &skip], 10.0)], 2.0);
-    let download = {
+    use crate::updater::Install;
+    let state = crate::updater::install_state();
+    let detail: Retained<NSView> = match state {
+        Install::Idle => ui::v(&*ui::hstack(&[&notes, &skip], 10.0)),
+        Install::Downloading(Some(p)) => ui::v(&*ui::secondary_label(&format!("Downloading… {p}%"))),
+        Install::Downloading(None) => ui::v(&*ui::secondary_label("Downloading…")),
+        Install::Installing => ui::v(&*ui::secondary_label("Verifying and installing…")),
+    };
+    let texts = ui::vstack(&[&title, &detail], 2.0);
+    let label = if crate::updater::self_update_blocker().is_none() { "Update" } else { "Download" };
+    let action = {
         let r = rel.clone();
-        kit::glass_button("Download", None, true, h, move || {
+        kit::glass_button(label, None, true, h, move || {
             app().close_popover();
-            crate::updater::download(&r);
+            crate::updater::install(&r);
         })
     };
-    download.setControlSize(objc2_app_kit::NSControlSize::Small);
-    let row = ui::fill_hstack(&[&icon, &texts, &ui::spacer(), &download], 10.0);
+    action.setControlSize(objc2_app_kit::NSControlSize::Small);
+    action.setEnabled(state == Install::Idle);
+    action.setToolTip(Some(&ns(if label == "Update" { "Install the update and relaunch Shaft" } else { "Download the new version" })));
+    let row = ui::fill_hstack(&[&icon, &texts, &ui::spacer(), &action], 10.0);
     ui::v(&*kit::card_padded(&row, 10.0, kit::space::CARD_H))
 }
 
