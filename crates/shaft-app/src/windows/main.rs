@@ -15,8 +15,8 @@ use objc2::{
     DefinedClass, MainThreadOnly,
 };
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSControlTextEditingDelegate, NSSplitViewController, NSSplitViewItem, NSTableCellView, NSTableColumn,
-    NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle, NSToolbar, NSToolbarDelegate, NSToolbarItem,
+    NSBackgroundStyle, NSBackingStoreType, NSColor, NSControlTextEditingDelegate, NSSplitViewController, NSSplitViewItem, NSTableCellView,
+    NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle, NSToolbar, NSToolbarDelegate, NSToolbarItem,
     NSToolbarItemIdentifier, NSView, NSViewController, NSWindow, NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{NSArray, NSInteger, NSNotification, NSPoint, NSRect, NSSize};
@@ -62,18 +62,37 @@ impl Section {
             Section::Diagnostics => "stethoscope",
         }
     }
+}
 
-    fn tint(self) -> Retained<NSColor> {
-        match self {
-            Section::Tunnels => NSColor::systemIndigoColor(),
-            Section::Inspector => NSColor::systemOrangeColor(),
-            Section::Resources => NSColor::systemBlueColor(),
-            Section::Accounts => NSColor::systemGreenColor(),
-            Section::Settings => NSColor::systemGrayColor(),
-            Section::Diagnostics => NSColor::systemPinkColor(),
-        }
+/// Sidebar icon color: the system accent color (it follows System Settings →
+/// Appearance), or the selected-text color on an accent-filled selection.
+fn icon_tint(style: NSBackgroundStyle) -> Retained<NSColor> {
+    if style == NSBackgroundStyle::Emphasized {
+        NSColor::alternateSelectedControlTextColor()
+    } else {
+        NSColor::controlAccentColor()
     }
 }
+
+define_class!(
+    /// A sidebar row that re-tints its icon when the selection style changes.
+    #[unsafe(super(NSTableCellView, NSView, objc2_app_kit::NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "ShaftSidebarCell"]
+    struct SidebarCell;
+
+    unsafe impl NSObjectProtocol for SidebarCell {}
+
+    impl SidebarCell {
+        #[unsafe(method(setBackgroundStyle:))]
+        fn set_background_style(&self, style: NSBackgroundStyle) {
+            let _: () = unsafe { msg_send![super(self), setBackgroundStyle: style] };
+            if let Some(icon) = unsafe { self.imageView() } {
+                icon.setContentTintColor(Some(&icon_tint(style)));
+            }
+        }
+    }
+);
 
 // ---------------------------------------------------------------------------
 // Sidebar data source (view-based source list)
@@ -124,8 +143,8 @@ define_class!(
 /// Icon + title cell for a sidebar row.
 fn sidebar_cell(row: NSInteger) -> Option<Retained<NSView>> {
     let section = Section::ALL.get(row as usize).copied()?;
-    let cell = NSTableCellView::new(mtm());
-    let icon = kit::symbol_view(section.symbol(), 14.0, Some(&section.tint()));
+    let cell: Retained<SidebarCell> = unsafe { msg_send![SidebarCell::alloc(mtm()), init] };
+    let icon = kit::symbol_view(section.symbol(), 14.0, Some(&icon_tint(NSBackgroundStyle::Normal)));
     let text = ui::label(section.title());
     icon.setTranslatesAutoresizingMaskIntoConstraints(false);
     text.setTranslatesAutoresizingMaskIntoConstraints(false);
@@ -141,7 +160,7 @@ fn sidebar_cell(row: NSInteger) -> Option<Retained<NSView>> {
         cell.setImageView(Some(&icon));
         cell.setTextField(Some(&text));
     }
-    Some(Retained::into_super(cell))
+    Some(Retained::into_super(Retained::into_super(cell)))
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +261,9 @@ fn build() -> MainWindow {
     sidebar_item.setMinimumThickness(190.0);
     sidebar_item.setMaximumThickness(260.0);
     sidebar_item.setCanCollapse(true);
+    // Keep the sidebar's width while panes change: only a divider drag
+    // (NSLayoutPriorityDragThatCannotResizeWindow = 490) may resize it.
+    sidebar_item.setHoldingPriority(489.0);
 
     // Content.
     let container = NSView::new(m);
@@ -251,6 +273,8 @@ fn build() -> MainWindow {
     content_item.setMinimumThickness(560.0);
 
     let split = NSSplitViewController::new(m);
+    // Remember the width the user drags the sidebar to.
+    split.splitView().setAutosaveName(Some(&ns("ShaftMainSplit")));
     split.addSplitViewItem(&sidebar_item);
     split.addSplitViewItem(&content_item);
 
@@ -329,6 +353,32 @@ pub fn window() -> Option<Retained<NSWindow>> {
 }
 
 impl MainWindow {
+    /// Make room for `pane` by widening the window (never the sidebar), and
+    /// keep the window from being made narrower than the pane needs.
+    fn fit_window_to(&self, pane: &NSView) {
+        const MIN_WIDTH: f64 = 820.0;
+        self.window.layoutIfNeeded();
+        let need = pane.fittingSize().width;
+        let have = self.container.frame().size.width;
+        let mut frame = self.window.frame();
+        let min_width = (frame.size.width + need - have).max(MIN_WIDTH);
+        self.window.setMinSize(NSSize::new(min_width, self.window.minSize().height));
+        if need > have + 0.5 {
+            let mut width = frame.size.width + (need - have).ceil();
+            if let Some(screen) = self.window.screen() {
+                let visible = screen.visibleFrame();
+                width = width.min(visible.size.width);
+                // Grow to the right, shifting left if it would leave the screen.
+                let overflow = frame.origin.x + width - (visible.origin.x + visible.size.width);
+                if overflow > 0.0 {
+                    frame.origin.x = (frame.origin.x - overflow).max(visible.origin.x);
+                }
+            }
+            frame.size.width = width;
+            self.window.setFrame_display(frame, true);
+        }
+    }
+
     fn select(&self, section: Section) {
         if self.current.get() == Some(section) {
             return;
@@ -353,7 +403,14 @@ impl MainWindow {
         pane.topAnchor().constraintEqualToAnchor(&guide.topAnchor()).setActive(true);
         pane.bottomAnchor().constraintEqualToAnchor(&self.container.bottomAnchor()).setActive(true);
         pane.leadingAnchor().constraintEqualToAnchor(&self.container.leadingAnchor()).setActive(true);
-        pane.trailingAnchor().constraintEqualToAnchor(&self.container.trailingAnchor()).setActive(true);
+        // Fill the container but never resize it: a pane's own width
+        // preferences must not move the sidebar or resize the window. A pane
+        // wider than the container is clipped instead.
+        pane.widthAnchor().constraintGreaterThanOrEqualToAnchor(&self.container.widthAnchor()).setActive(true);
+        let fill = pane.widthAnchor().constraintEqualToAnchor(&self.container.widthAnchor());
+        fill.setPriority(480.0);
+        fill.setActive(true);
+        self.fit_window_to(&pane);
         self.current.set(Some(section));
         self.window.setTitle(&ns(section.title()));
         self.window.setSubtitle(&ns(""));

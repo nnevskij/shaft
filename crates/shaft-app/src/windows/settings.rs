@@ -184,8 +184,10 @@ fn build() -> SettingsPane {
     content.bottomAnchor().constraintEqualToAnchor(&column.bottomAnchor()).setActive(true);
     content.centerXAnchor().constraintEqualToAnchor(&column.centerXAnchor()).setActive(true);
     content.widthAnchor().constraintLessThanOrEqualToConstant(680.0).setActive(true);
+    // Below the sidebar's holding priority (489): filling the column must
+    // never shrink the pane and widen the sidebar.
     let w = content.widthAnchor().constraintEqualToAnchor(&column.widthAnchor());
-    w.setPriority(500.0);
+    w.setPriority(470.0);
     w.setActive(true);
     let col_stack = ui::vstack(&[&column], 0.0);
     ui::fill_width(&col_stack, &column);
